@@ -30,6 +30,8 @@ require("hs.fs")
 require("hs.image")
 require("hs.canvas")
 require("hs.styledtext")
+require("hs.task")
+require("hs.pathwatcher")
 
 local M = {}
 
@@ -816,14 +818,34 @@ function M.resetMissing()
   notify("Cleared the missing-item list.")
 end
 
-function M.refreshCatalog()
-  hs.task.new("/usr/bin/python3", function(code, stdout, stderr)
+function M.refreshCatalog(auto)
+  -- Single-flight; the task handle is anchored (unreferenced hs.task objects
+  -- are GC'd mid-run, like timers).
+  if M.refreshTask and M.refreshTask:isRunning() then return end
+  M.refreshTask = hs.task.new("/usr/bin/python3", function(code, stdout, stderr)
     if code == 0 then
-      notify("Catalog refreshed: " .. (stdout:match("^(%d+ items)") or "done") .. ".")
+      local n = stdout:match("^(%d+ items)") or "done"
+      notify((auto and "New FCP plugins detected — catalog refreshed: "
+                    or "Catalog refreshed: ") .. n .. ".")
     else
       notify("Catalog refresh failed: " .. tostring(stderr))
     end
-  end, { M.config.stateDir .. "/build_catalog.py" }):start()
+  end, { M.config.stateDir .. "/build_catalog.py" })
+  M.refreshTask:start()
+end
+
+-- Auto-refresh: watch the plugin roots and rebuild the catalog when template
+-- or preset files change (plugin installs/removals). Debounced hard because
+-- installers touch hundreds of files in a burst.
+local WATCH_PATHS = {
+  os.getenv("HOME") .. "/Movies/Motion Templates.localized/",
+  os.getenv("HOME") .. "/Library/Application Support/ProApps/Effects Presets/",
+  "/Library/Application Support/Final Cut Pro/Templates.localized/",
+}
+
+local function isPluginFile(path)
+  return path:match("%.mot[inr]$") or path:match("%.moef$")
+      or path:match("%.effectsPreset$")
 end
 
 function M.start()
@@ -896,6 +918,25 @@ function M.start()
   M.appWatcher:start()
   local front = hs.application.frontmostApplication()
   if front and front:bundleID() == M.config.fcpBundle then M.hotkeyObj:enable() end
+
+  M.pathWatchers = {}
+  for _, p in ipairs(WATCH_PATHS) do
+    local pw = hs.pathwatcher.new(p, function(files)
+      for _, f in ipairs(files) do
+        if isPluginFile(f) then
+          if M.refreshDebounce then M.refreshDebounce:stop() end
+          M.refreshDebounce = hs.timer.doAfter(15, function()
+            M.refreshCatalog(true)
+          end)
+          return
+        end
+      end
+    end)
+    if pw then
+      pw:start()
+      table.insert(M.pathWatchers, pw)
+    end
+  end
 
   M.chooser = chooser
   M.show = showPalette

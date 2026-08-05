@@ -38,7 +38,7 @@ python3 build_catalog.py
 
 | Task | How |
 |---|---|
-| New plugins installed | `hs -c 'fcpPalette.refreshCatalog()'` (or rerun `build_catalog.py`) |
+| New plugins installed | Nothing — path watchers rebuild the catalog automatically (~15 s after the install settles). Force with `hs -c 'fcpPalette.refreshCatalog()'` |
 | Change hotkey | `M.config.hotkey` at the top of `fcp_palette.lua` |
 | Debug a flow | `fcpPalette.config.debug = true` → `/tmp/fcp-palette.log` |
 | Scripted apply | `fcpPalette.apply("Video Effect", "Gaussian")` |
@@ -47,4 +47,7 @@ python3 build_catalog.py
 `catalog.json`, `catalog.lua`, and `frecency.json` are runtime state
 (git-ignored). The palette loads `catalog.lua` (`hs.json.decode` freezes
 Hammerspoon for tens of seconds on a file this size; `dofile` is milliseconds)
-— `build_catalog.py` writes both.
+— `build_catalog.py` writes both. The scan drops templates whose `<template>`
+flags carry the obsolete bit (FCP's own hide marker — how plugin stores ship
+thousands of uninstalled placeholders) and skips the bundle's unlisted iMovie
+"Simple" titles, so the palette only offers what FCP's browser actually shows.

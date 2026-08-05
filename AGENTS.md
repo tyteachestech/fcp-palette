@@ -25,4 +25,9 @@ Working rules:
   tens of seconds at this file size (and masquerades as an IPC wedge). The
   palette loads the generated `catalog.lua` via `dofile`.
 - Anchor every `hs.timer.doAfter` handle in a module-level variable —
-  unreferenced timers are garbage-collected before they fire.
+  unreferenced timers are garbage-collected before they fire. Same for
+  `hs.task` and `hs.pathwatcher` objects.
+- The catalog scan filters templates whose `<template>` `<flags>` carry bit 2
+  (obsolete) — that is FCP's on-disk hide marker (verified against
+  CommandPost's scanner and FCB's hidden "+" theme). Don't "fix" a missing
+  item by removing that filter; check the flags first.

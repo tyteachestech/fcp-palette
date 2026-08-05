@@ -100,11 +100,24 @@ Disk-scanned display names (English install), deduped per category:
 | Source | Yields |
 |---|---|
 | `~/Movies/Motion Templates.localized/{Titles,Generators,Effects,Transitions}.localized` | All third-party/user templates |
-| FCP bundle `MotionEffect.fxp …/{Templates,PETemplates,METemplates}.localized` | Built-in Motion templates (PE holds most stock titles/generators/transitions, e.g. "Basic Title") |
+| `/Library/Application Support/Final Cut Pro/Templates.localized` | System-level third-party templates (CineMatch, Spherico, …) |
+| FCP bundle `MotionEffect.fxp …/{Templates,PETemplates,METemplates}.localized` | Built-in Motion templates (PE holds most stock titles/generators/transitions, e.g. "Basic Title"). The bundle's "Simple" category is skipped — unlisted iMovie titles FCP never shows |
 | FCP bundle `InternalFiltersXPC` `Localizable.strings` keys `*::Filter Name` | Built-in compiled video effects |
 | FCP bundle `Flexo …/EDELPresets/Plug-In Settings/` folder names | Logic audio effects (Channel EQ, Compressor, …) |
+| FCP bundle `Flexo …/Resources/Effect Bundles/*.audio.effectBundle` | FCP-native audio effects (Alien, Doubler, Cathedral, …), names via `FFEffectBundleLocalizable.strings` |
 | `auval -s aufx` | Apple + third-party Audio Units |
 | `~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset` | Tyler's saved effect presets |
+
+**Obsolete-flag filter** (the disk marker behind "items that don't exist",
+learned from CommandPost's scanner): every Motion template's `<template>`
+element carries `<flags>`; bit 2 marks it obsolete/hidden — FCP's browser
+never shows it. This is how mExt/motionVFX-style stores ship thousands of
+placeholder templates (uninstalled store items) alongside installed ones, and
+why FCB's "+"-theme titles were invisible. The scan parses each template's
+flags and drops obsolete ones (~10k placeholder phantoms on this machine),
+and reads the `<theme>` element as the item's set name (the browser's real
+group) with the folder name as fallback. Runtime tombstoning (below) stays as
+the backstop for anything the flag doesn't predict (e.g. renamed built-ins).
 
 The palette loads the catalog from a generated **`catalog.lua`** via `dofile`
 (milliseconds); `hs.json.decode` on the equivalent 1.7 MB JSON freezes
@@ -112,9 +125,11 @@ Hammerspoon's main thread for tens of seconds (verified 2026-08-05 — it also
 masqueraded as an "IPC wedge"). `build_catalog.py` writes both files; the JSON
 stays as the tool-agnostic record.
 
-~20k items on this machine. Refresh manually with
-`fcpPalette.refreshCatalog()` — no auto-invalidation (no complete watch list
-exists, and staleness costs one keystroke thanks to the fallback rows). A few
+~10k items on this machine. The catalog self-refreshes: `hs.pathwatcher`s on
+the user/system template roots and the effect-presets folder trigger a
+debounced (15 s) background `build_catalog.py` run when template/preset files
+change, so plugin installs and newly saved presets appear without manual
+action (`fcpPalette.refreshCatalog()` still works for a forced rebuild). A few
 built-ins may carry renamed browser labels (e.g. strings say "Gaussian Blur",
 browser says "Gaussian" — the template scan has the right one, but the strings
 lane can drift): those fail loud at apply and stay reachable via raw search.
@@ -148,11 +163,10 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
   with eventtaps that run only while the palette is visible.
 - Hammerspoon gotcha baked in: `hs.timer.doAfter` handles must be anchored in
   module-level variables — unreferenced timers are GC'd before firing.
-- **Self-healing catalog**: some third-party packs ship template folders FCP's
-  browser refuses to show (verified: FCB's Pro Zooms "+" theme — on disk with
-  valid .moti files, invisible to browser search; no reliable on-disk marker
-  distinguishes them). The disk scan can't predict this, so when a
-  verified-typed search selects nothing, the item is tombstoned in
+- **Self-healing catalog**: the obsolete-flag filter (Catalog section) removes
+  browser-hidden templates at scan time, but not everything is predictable
+  from disk (renamed built-ins; any hiding rule the flag doesn't cover). When
+  a verified-typed search selects nothing, the item is tombstoned in
   `missing.json` and never offered again; `fcpPalette.resetMissing()` clears
   the list (e.g. after a plugin update).
 - All failures surface as notifications with the reason; nothing fails silent.

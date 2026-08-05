@@ -8,6 +8,7 @@ Sources (all name-accurate for an English-language install):
 - Audio Units:             `auval -s aufx` ("Vendor: Name" lines)
 - Tyler's effect presets:  ~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset
 """
+import html
 import json
 import os
 import re
@@ -35,6 +36,18 @@ EDEL = (
     "/Applications/Final Cut Pro.app/Contents/Frameworks/Flexo.framework/"
     "Versions/A/Resources/EDELPresets/Plug-In Settings"
 )
+# FCP-native audio effects (Alien, Doubler, Cathedral, ...) live as
+# Name.Category.audio.effectBundle files, display names in the strings table.
+EFFECT_BUNDLES = (
+    "/Applications/Final Cut Pro.app/Contents/Frameworks/Flexo.framework/"
+    "Resources/Effect Bundles"
+)
+EFFECT_BUNDLE_STRINGS = (
+    "/Applications/Final Cut Pro.app/Contents/Frameworks/Flexo.framework/"
+    "Resources/en.lproj/FFEffectBundleLocalizable.strings"
+)
+# Third-party installers may also drop templates at the system level.
+SYSTEM_TEMPLATES = "/Library/Application Support/Final Cut Pro/Templates.localized"
 PRESETS = os.path.join(HOME, "Library", "Application Support", "ProApps", "Effects Presets")
 
 CATEGORY_MAP = {
@@ -55,6 +68,42 @@ def keep_name(name):
     # "don't exist".
     return (name and not name.startswith(".") and not name.startswith("_")
             and not UUID_RE.match(name))
+
+TEMPLATE_EXTS = (".moti", ".motn", ".moef", ".motr")
+OBSOLETE_FLAG = 2
+
+def template_file(item_dir):
+    for fn in os.listdir(item_dir):
+        if fn.endswith(TEMPLATE_EXTS):
+            return os.path.join(item_dir, fn)
+
+def template_meta(path):
+    """(theme, is_obsolete) from the <template> element of a Motion template.
+    FCP's browser hides templates whose flags carry the obsolete bit — offering
+    them would suggest items that "don't exist" (this is the on-disk marker
+    behind e.g. FCB's hidden "Pro Zooms +" theme). The <theme> element is the
+    browser's real group name, truer than the folder name."""
+    theme, flags, in_template = None, None, False
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                line = line.rstrip()
+                if not in_template and line.endswith("<template>"):
+                    in_template = True
+                if in_template:
+                    if theme is None:
+                        m = re.search(r"<theme>(.+)</theme>", line)
+                        if m:
+                            theme = html.unescape(m.group(1))
+                    if flags is None:
+                        m = re.search(r"<flags>(\d+)</flags>", line)
+                        if m:
+                            flags = int(m.group(1))
+                    if line.endswith("</template>"):
+                        break
+    except OSError:
+        pass
+    return theme, bool((flags or 0) & OBSOLETE_FLAG)
 
 def thumb_for(item_dir):
     """The template's own browser thumbnail (every Motion template dir ships
@@ -92,7 +141,24 @@ def display_name(parent, entry):
                 continue
     return base
 
-def scan_templates(root, items, seen):
+def add_template_item(items, seen, category, name, fallback_set, item_dir):
+    tf = template_file(item_dir)
+    if not tf:
+        return False
+    theme, obsolete = template_meta(tf)
+    if obsolete:
+        return True  # a template dir, but FCP's browser hides it
+    key = (category, name.lower())
+    if key not in seen:
+        seen.add(key)
+        item = {"name": name, "category": category, "set": theme or fallback_set}
+        t = thumb_for(item_dir)
+        if t:
+            item["thumb"] = t
+        items.append(item)
+    return True
+
+def scan_templates(root, items, seen, skip_categories=()):
     for folder, category in CATEGORY_MAP.items():
         for suffix in (folder + ".localized", folder):
             base = os.path.join(root, suffix)
@@ -101,6 +167,8 @@ def scan_templates(root, items, seen):
             for set_entry in sorted(os.listdir(base)):
                 set_dir = os.path.join(base, set_entry)
                 if not os.path.isdir(set_dir):
+                    continue
+                if strip_localized(set_entry) in skip_categories:
                     continue
                 set_name = display_name(base, set_entry)
                 for item_entry in sorted(os.listdir(set_dir)):
@@ -112,33 +180,14 @@ def scan_templates(root, items, seen):
                     # contains a .moti/.motn/.moef/.motr file
                     if not keep_name(name):
                         continue
-                    if any(fn.endswith((".moti", ".motn", ".moef", ".motr"))
-                           for fn in os.listdir(item_dir)):
-                        key = (category, name.lower())
-                        if key not in seen:
-                            seen.add(key)
-                            item = {"name": name, "category": category, "set": set_name}
-                            t = thumb_for(item_dir)
-                            if t:
-                                item["thumb"] = t
-                            items.append(item)
-                    else:
+                    if not add_template_item(items, seen, category, name,
+                                             set_name, item_dir):
                         for sub in sorted(os.listdir(item_dir)):
                             sub_dir = os.path.join(item_dir, sub)
                             sub_name = display_name(item_dir, sub)
-                            if keep_name(sub_name) and os.path.isdir(sub_dir) and any(
-                                fn.endswith((".moti", ".motn", ".moef", ".motr"))
-                                for fn in os.listdir(sub_dir)
-                            ):
-                                key = (category, sub_name.lower())
-                                if key not in seen:
-                                    seen.add(key)
-                                    item = {"name": sub_name, "category": category,
-                                            "set": name}
-                                    t = thumb_for(sub_dir)
-                                    if t:
-                                        item["thumb"] = t
-                                    items.append(item)
+                            if keep_name(sub_name) and os.path.isdir(sub_dir):
+                                add_template_item(items, seen, category,
+                                                  sub_name, name, sub_dir)
             break  # matched a suffix form; don't double-scan
 
 def scan_internal_filters(items, seen):
@@ -163,12 +212,40 @@ def scan_internal_filters(items, seen):
                 seen.add(key)
                 items.append({"name": v, "category": "Video Effect", "set": "Built-in"})
 
+def scan_effect_bundles(items, seen):
+    """FCP-native audio effects (Alien, Doubler, Cathedral, ...) — not Audio
+    Units, not EDEL presets; absent from every other source."""
+    if not os.path.isdir(EFFECT_BUNDLES):
+        return
+    table = {}
+    try:
+        out = subprocess.run(["plutil", "-convert", "json", "-o", "-",
+                              EFFECT_BUNDLE_STRINGS],
+                             capture_output=True, timeout=30)
+        table = json.loads(out.stdout)
+    except Exception as e:
+        print(f"effect bundle strings skipped: {e}", file=sys.stderr)
+    for entry in sorted(os.listdir(EFFECT_BUNDLES)):
+        m = re.match(r"^([^.]+)\.([^.]+)\.audio\.effectBundle$", entry)
+        if not m:
+            continue
+        name = table.get(m.group(1)) or m.group(1)
+        key = ("Audio Effect", name.lower())
+        if key not in seen:
+            seen.add(key)
+            items.append({"name": name, "category": "Audio Effect",
+                          "set": m.group(2)})
+
 def main():
     items, seen = [], set()
     scan_templates(USER_TEMPLATES, items, seen)
+    scan_templates(SYSTEM_TEMPLATES, items, seen)
     for root in BUNDLE_TEMPLATE_ROOTS:
-        scan_templates(root, items, seen)
+        # The bundle's "Simple" category holds unlisted iMovie titles that
+        # FCP's own browser never shows.
+        scan_templates(root, items, seen, skip_categories=("Simple",))
     scan_internal_filters(items, seen)
+    scan_effect_bundles(items, seen)
 
     if os.path.isdir(EDEL):
         for entry in sorted(os.listdir(EDEL)):
