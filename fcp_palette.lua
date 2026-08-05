@@ -26,7 +26,9 @@ local ax = require("hs.axuielement")
 local M = {}
 
 M.config = {
-  hotkey     = { { "alt" }, "space" },
+  -- ⇧Space, enabled only while FCP is frontmost (a global shift+space would
+  -- fire constantly mid-typing in every other app).
+  hotkey     = { { "shift" }, "space" },
   stateDir   = os.getenv("HOME") .. "/content/tools/fcp-palette",
   fcpBundle  = "com.apple.FinalCut",
   filterWait = 0.45,   -- seconds for FCP's browser filter to settle after typing
@@ -43,7 +45,9 @@ local function dbg(s)
   end
 end
 
-local CATALOG_PATH  = M.config.stateDir .. "/catalog.json"
+-- catalog.lua (not the json): hs.json.decode takes tens of seconds on a file
+-- this size and freezes Hammerspoon's main thread; dofile takes milliseconds.
+local CATALOG_PATH  = M.config.stateDir .. "/catalog.lua"
 local FRECENCY_PATH = M.config.stateDir .. "/frecency.json"
 
 -- How each category applies. sidebar = Titles & Generators browser (connect at
@@ -521,9 +525,22 @@ local function recordUse(id)
 end
 
 local allChoices = {}
+local catalogCache, catalogMtime
+
+local function loadCatalog()
+  local mt = hs.fs.attributes(CATALOG_PATH, "modification")
+  if catalogCache and mt == catalogMtime then return catalogCache end
+  local ok, data = pcall(dofile, CATALOG_PATH)
+  if ok and type(data) == "table" then
+    catalogCache, catalogMtime = data, mt
+    return data
+  end
+  notify("No catalog — run build_catalog.py (or fcpPalette.refreshCatalog()).")
+  return {}
+end
 
 local function loadChoices()
-  local catalog = readJSON(CATALOG_PATH) or {}
+  local catalog = loadCatalog()
   local log = readJSON(FRECENCY_PATH) or {}
   local now = os.time()
   allChoices = {}
@@ -585,6 +602,10 @@ end
 -- ── Palette ──────────────────────────────────────────────────────────────
 
 local chooser
+local lastShown = {}   -- choices currently displayed (drives ⌘1–9 picking)
+local cmdHeld = false
+local clickTap, keysTap, flagsTap, closeCanvas
+local chromeTimer, pickTimer   -- anchored: unreferenced hs.timer objects get GC'd before firing
 
 local function applyChoice(choice)
   local app = fcp()
@@ -607,6 +628,89 @@ local function applyChoice(choice)
   if ok then recordUse(choice.id) end
 end
 
+-- The chooser panel's frame via AX: Hammerspoon's window titled "Chooser"
+-- (verified), with untitled-window-holding-a-text-field as fallback. Read
+-- fresh every time — never cached (display topology changes mid-session).
+local function chooserAXFrame()
+  local appEl = ax.applicationElementForPID(hs.processInfo.processID)
+  local fallback
+  for _, win in ipairs(attr(appEl, "AXWindows") or {}) do
+    local title = attr(win, "AXTitle")
+    if title == "Chooser" then return attr(win, "AXFrame") end
+    if (title == nil or title == "") and not fallback then
+      if findFirst(win, function(e) return attr(e, "AXRole") == "AXTextField" end, 4, 60) then
+        fallback = attr(win, "AXFrame")
+      end
+    end
+  end
+  return fallback
+end
+
+-- ⌘1–9 badges appended to the first nine rows, visible only while ⌘ is held.
+local function decorated(list)
+  if not cmdHeld then return list end
+  local out = {}
+  for i, c in ipairs(list) do
+    local d = {}
+    for k, v in pairs(c) do d[k] = v end
+    if i <= 9 and type(c.text) == "string" then
+      d.text = hs.styledtext.new(c.text) ..
+        hs.styledtext.new("    ⌘" .. i, { color = { white = 0.55, alpha = 0.9 } })
+    end
+    out[i] = d
+  end
+  return out
+end
+
+local function setChoices(list)
+  lastShown = list
+  chooser:choices(decorated(list))
+end
+
+local function pickRow(n)
+  local choice = lastShown[n]
+  if not choice then return end
+  chooser:hide()
+  -- run outside the eventtap callback (applies do synchronous AX work)
+  pickTimer = hs.timer.doAfter(0.05, function() applyChoice(choice) end)
+end
+
+local function showCloseButton()
+  local fr = chooserAXFrame()
+  if not fr then return end   -- cosmetic only; Esc/⌘W/click-off still close
+  local size = 18
+  closeCanvas = hs.canvas.new({ x = fr.x + fr.w - size - 8, y = fr.y + 9, w = size, h = size })
+  closeCanvas[1] = { type = "circle", action = "fill",
+                     fillColor = { white = 0.5, alpha = 0.35 } }
+  closeCanvas[2] = { type = "text", text = "✕", textSize = 11,
+                     textAlignment = "center",
+                     textColor = { white = 1, alpha = 0.9 },
+                     frame = { x = "0%", y = "8%", w = "100%", h = "92%" } }
+  closeCanvas:level(hs.canvas.windowLevels.popUpMenu)
+  closeCanvas:clickActivating(false)
+  closeCanvas:canvasMouseEvents(true, false)
+  closeCanvas:mouseCallback(function() chooser:hide() end)
+  closeCanvas:show()
+end
+
+local function chromeDown()
+  if clickTap then clickTap:stop() end
+  if keysTap then keysTap:stop() end
+  if flagsTap then flagsTap:stop() end
+  if closeCanvas then closeCanvas:delete() closeCanvas = nil end
+  cmdHeld = false
+end
+
+local function chromeUp()
+  chromeDown()
+  clickTap:start()
+  keysTap:start()
+  flagsTap:start()
+  chromeTimer = hs.timer.doAfter(0.1, function()
+    if chooser:isVisible() then showCloseButton() end
+  end)
+end
+
 local function showPalette()
   if not fcp() then
     notify("Final Cut Pro isn't running.")
@@ -614,7 +718,7 @@ local function showPalette()
   end
   loadChoices()
   chooser:query("")
-  chooser:choices(filteredChoices(""))
+  setChoices(filteredChoices(""))
   chooser:show()
 end
 
@@ -637,9 +741,73 @@ function M.start()
   chooser = hs.chooser.new(function(choice)
     if choice then applyChoice(choice) end
   end)
-  chooser:queryChangedCallback(function(q) chooser:choices(filteredChoices(q)) end)
+  chooser:queryChangedCallback(function(q) setChoices(filteredChoices(q)) end)
   chooser:placeholderText("Titles, generators, effects…")
-  M.hotkeyObj = hs.hotkey.bind(M.config.hotkey[1], M.config.hotkey[2], showPalette)
+  chooser:showCallback(chromeUp)
+  chooser:hideCallback(chromeDown)
+
+  local types = hs.eventtap.event.types
+
+  -- Click anywhere outside the palette dismisses it (the click still lands
+  -- where it was aimed, Spotlight-style). Geometry when the panel frame is
+  -- readable; pid-under-point as fallback.
+  clickTap = hs.eventtap.new({ types.leftMouseDown, types.rightMouseDown }, function(ev)
+    local pt = ev:location()
+    local fr = chooserAXFrame()
+    local inside
+    if fr then
+      inside = pt.x >= fr.x and pt.x <= fr.x + fr.w and pt.y >= fr.y and pt.y <= fr.y + fr.h
+    else
+      local el = ax.systemElementAtPosition(pt)
+      inside = el ~= nil and el:pid() == hs.processInfo.processID
+    end
+    if not inside then chooser:hide() end
+    return false
+  end)
+
+  -- ⌘W closes; ⌘1–9 applies that row. (Esc is the chooser's own close.)
+  keysTap = hs.eventtap.new({ types.keyDown }, function(ev)
+    local flags = ev:getFlags()
+    if not flags.cmd or flags.alt or flags.ctrl then return false end
+    local key = hs.keycodes.map[ev:getKeyCode()]
+    if key == "w" then
+      chooser:hide()
+      return true
+    end
+    local n = tonumber(key)
+    if n and n >= 1 and n <= 9 then
+      pickRow(n)
+      return true
+    end
+    return false
+  end)
+
+  -- ⌘ held → show the ⌘1–9 badges; ⌘ released → hide them.
+  flagsTap = hs.eventtap.new({ types.flagsChanged }, function(ev)
+    local held = ev:getFlags().cmd and true or false
+    if held ~= cmdHeld then
+      cmdHeld = held
+      local row = chooser:selectedRow()
+      chooser:choices(decorated(lastShown))
+      chooser:selectedRow(row)
+    end
+    return false
+  end)
+
+  M.hotkeyObj = hs.hotkey.new(M.config.hotkey[1], M.config.hotkey[2], showPalette)
+  M.appWatcher = hs.application.watcher.new(function(_, event, app)
+    if app and app:bundleID() == M.config.fcpBundle then
+      if event == hs.application.watcher.activated then
+        M.hotkeyObj:enable()
+      elseif event == hs.application.watcher.deactivated then
+        M.hotkeyObj:disable()
+      end
+    end
+  end)
+  M.appWatcher:start()
+  local front = hs.application.frontmostApplication()
+  if front and front:bundleID() == M.config.fcpBundle then M.hotkeyObj:enable() end
+
   M.chooser = chooser
   M.show = showPalette
   return M

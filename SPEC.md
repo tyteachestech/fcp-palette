@@ -1,6 +1,8 @@
 # fcp-palette — Spotlight-style command palette for Final Cut Pro
 
-One global hotkey (**⌥Space**) opens a fuzzy-search palette over Final Cut's
+One hotkey (**⇧Space**, enabled only while FCP is frontmost — globally it
+would fire mid-typing in every other app) opens a fuzzy-search palette over
+Final Cut's
 **Titles, Generators, Video Effects, Audio Effects, and Effect Presets**;
 picking an item applies it at the playhead. A lighter, fully-owned replacement
 for CommandPost's Search Console. Transitions are designed but not yet wired
@@ -104,6 +106,12 @@ Disk-scanned display names (English install), deduped per category:
 | `auval -s aufx` | Apple + third-party Audio Units |
 | `~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset` | Tyler's saved effect presets |
 
+The palette loads the catalog from a generated **`catalog.lua`** via `dofile`
+(milliseconds); `hs.json.decode` on the equivalent 1.7 MB JSON freezes
+Hammerspoon's main thread for tens of seconds (verified 2026-08-05 — it also
+masqueraded as an "IPC wedge"). `build_catalog.py` writes both files; the JSON
+stays as the tool-agnostic record.
+
 ~20k items on this machine. Refresh manually with
 `fcpPalette.refreshCatalog()` — no auto-invalidation (no complete watch list
 exists, and staleness costs one keystroke thanks to the fallback rows). A few
@@ -121,6 +129,16 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 - Two permanent fallback rows: **"Search Titles & Generators for '…'"** and
   **"Search Effects for '…'"** — bypass the catalog, filter the real browser
   to the raw text, and leave FCP showing the results for a manual pick.
+- **Dismissal**: Esc (chooser-native), ⌘W, an ✕ button top-right, or clicking
+  anywhere outside the palette (the click still lands where aimed,
+  Spotlight-style). Click-off uses the panel's AX frame (Hammerspoon's window
+  titled "Chooser") with pid-under-point as fallback; the ✕ is an `hs.canvas`
+  overlay positioned from that same frame, read fresh each show.
+- **⌘1–⌘9 quick-pick**: holding ⌘ re-renders the first nine rows with dimmed
+  ⌘*n* badges (styled-text suffix); pressing ⌘*n* applies that row. Implemented
+  with eventtaps that run only while the palette is visible.
+- Hammerspoon gotcha baked in: `hs.timer.doAfter` handles must be anchored in
+  module-level variables — unreferenced timers are GC'd before firing.
 - All failures surface as notifications with the reason; nothing fails silent.
 - Scripting surface: `fcpPalette.apply(category, name)`, `.show()`,
   `.refreshCatalog()`, `.config.debug = true` (logs to `/tmp/fcp-palette.log`).

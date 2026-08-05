@@ -1,8 +1,9 @@
 # fcp-palette
 
-Spotlight-style command palette for Final Cut Pro. **⌥Space** → type → Return
-applies any title, generator, video/audio effect, or saved effect preset at
-the playhead. Design + verified mechanics: [SPEC.md](SPEC.md).
+Spotlight-style command palette for Final Cut Pro. **⇧Space** (while FCP is
+frontmost) → type → Return applies any title, generator, video/audio effect,
+or saved effect preset at the playhead. Design + verified mechanics:
+[SPEC.md](SPEC.md).
 
 ## Install
 
@@ -22,11 +23,15 @@ python3 build_catalog.py
 
 ## Use
 
-- **⌥Space** with FCP running → fuzzy-search everything, Return to apply.
+- **⇧Space** with FCP frontmost → fuzzy-search everything, Return to apply.
   - Titles/generators connect at the playhead, above the primary storyline.
   - Effects apply to the selected clip, else the topmost clip under the
     playhead.
   - The last two rows raw-search FCP's own browser when the catalog misses.
+- Hold **⌘** to see ⌘1–⌘9 badges on the first nine rows; press ⌘*n* to apply
+  that row directly.
+- Close with **Esc**, **⌘W**, the **✕** in the top-right, or by clicking
+  anywhere outside the palette.
 - Every apply is verified; failures arrive as notifications, never silently.
 
 ## Maintenance
@@ -38,4 +43,7 @@ python3 build_catalog.py
 | Debug a flow | `fcpPalette.config.debug = true` → `/tmp/fcp-palette.log` |
 | Scripted apply | `fcpPalette.apply("Video Effect", "Gaussian")` |
 
-`catalog.json` and `frecency.json` are runtime state (git-ignored).
+`catalog.json`, `catalog.lua`, and `frecency.json` are runtime state
+(git-ignored). The palette loads `catalog.lua` (`hs.json.decode` freezes
+Hammerspoon for tens of seconds on a file this size; `dofile` is milliseconds)
+— `build_catalog.py` writes both.

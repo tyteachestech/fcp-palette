@@ -1,7 +1,8 @@
 # fcp-palette — agent guidance
 
-Hammerspoon command palette for Final Cut Pro (⌥Space → type → Return applies
-titles/generators/effects at the playhead). Read [SPEC.md](SPEC.md) before
+Hammerspoon command palette for Final Cut Pro (⇧Space while FCP is frontmost →
+type → Return applies titles/generators/effects at the playhead). Read
+[SPEC.md](SPEC.md) before
 changing anything — it records the verified AX mechanics and, critically, the
 falsified assumptions (the `C` key, browser-side verification, filesystem-only
 catalogs). Don't re-derive those.
@@ -18,4 +19,10 @@ Working rules:
 - Debugging: `fcpPalette.config.debug = true` logs to `/tmp/fcp-palette.log`.
   The `hs` CLI reply channel can wedge while the Lua side completes — log to a
   file and treat IPC timeouts as cosmetic.
-- Runtime state (`catalog.json`, `frecency.json`) stays git-ignored.
+- Runtime state (`catalog.json`, `catalog.lua`, `frecency.json`) stays
+  git-ignored.
+- Never load the catalog with `hs.json.decode` — it freezes Hammerspoon for
+  tens of seconds at this file size (and masquerades as an IPC wedge). The
+  palette loads the generated `catalog.lua` via `dofile`.
+- Anchor every `hs.timer.doAfter` handle in a module-level variable —
+  unreferenced timers are garbage-collected before they fire.
