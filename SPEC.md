@@ -129,6 +129,11 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 - Two permanent fallback rows: **"Search Titles & Generators for '…'"** and
   **"Search Effects for '…'"** — bypass the catalog, filter the real browser
   to the raw text, and leave FCP showing the results for a manual pick.
+- **Placement**: the palette opens on the screen of FCP's focused window
+  (mouse screen as fallback), ~680px wide, Spotlight position. `hs.chooser`
+  always opens on the primary screen and sizes off it, so the panel is
+  repositioned via an `AXPosition` write on show, and `chooser:width()` is fed
+  a primary-screen percentage computed for the target screen.
 - **Dismissal**: Esc (chooser-native), ⌘W, an ✕ button top-right, or clicking
   anywhere outside the palette (the click still lands where aimed,
   Spotlight-style). Click-off uses the panel's AX frame (Hammerspoon's window

@@ -628,22 +628,49 @@ local function applyChoice(choice)
   if ok then recordUse(choice.id) end
 end
 
--- The chooser panel's frame via AX: Hammerspoon's window titled "Chooser"
--- (verified), with untitled-window-holding-a-text-field as fallback. Read
--- fresh every time — never cached (display topology changes mid-session).
-local function chooserAXFrame()
+-- The chooser panel via AX: Hammerspoon's window titled "Chooser" (verified),
+-- with untitled-window-holding-a-text-field as fallback. Read fresh every
+-- time — never cached (display topology changes mid-session).
+local function chooserAXWindow()
   local appEl = ax.applicationElementForPID(hs.processInfo.processID)
   local fallback
   for _, win in ipairs(attr(appEl, "AXWindows") or {}) do
     local title = attr(win, "AXTitle")
-    if title == "Chooser" then return attr(win, "AXFrame") end
+    if title == "Chooser" then return win end
     if (title == nil or title == "") and not fallback then
       if findFirst(win, function(e) return attr(e, "AXRole") == "AXTextField" end, 4, 60) then
-        fallback = attr(win, "AXFrame")
+        fallback = win
       end
     end
   end
   return fallback
+end
+
+local function chooserAXFrame()
+  local win = chooserAXWindow()
+  return win and attr(win, "AXFrame")
+end
+
+-- hs.chooser always opens on the primary screen; move the panel to the screen
+-- FCP's focused window is on (mouse screen as fallback), Spotlight-position.
+-- The screen the palette belongs on: FCP's focused window's screen, else the
+-- mouse's, else the main screen.
+local function targetScreen()
+  local app = fcp()
+  local fwin = app and (app:focusedWindow() or app:mainWindow())
+  return (fwin and fwin:screen()) or hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
+end
+
+local function moveToActiveScreen()
+  local win = chooserAXWindow()
+  local fr = win and attr(win, "AXFrame")
+  if not fr then return false end
+  local sf = targetScreen():frame()
+  local pt = { x = sf.x + (sf.w - fr.w) / 2, y = sf.y + sf.h * 0.2 }
+  if math.abs(pt.x - fr.x) > 2 or math.abs(pt.y - fr.y) > 2 then
+    win:setAttributeValue("AXPosition", pt)
+  end
+  return true
 end
 
 -- ⌘1–9 badges appended to the first nine rows, visible only while ⌘ is held.
@@ -706,8 +733,12 @@ local function chromeUp()
   clickTap:start()
   keysTap:start()
   flagsTap:start()
+  moveToActiveScreen()   -- best-effort synchronous; retried below if the panel wasn't up yet
   chromeTimer = hs.timer.doAfter(0.1, function()
-    if chooser:isVisible() then showCloseButton() end
+    if chooser:isVisible() then
+      moveToActiveScreen()
+      showCloseButton()   -- positions off the frame read AFTER the move
+    end
   end)
 end
 
@@ -719,6 +750,10 @@ local function showPalette()
   loadChoices()
   chooser:query("")
   setChoices(filteredChoices(""))
+  -- chooser:width() is a percentage of the PRIMARY screen; convert so the
+  -- panel is ~680px (Spotlight-ish) on whichever screen it will land on.
+  local wpx = math.min(680, targetScreen():frame().w * 0.85)
+  chooser:width(wpx / hs.screen.primaryScreen():frame().w * 100)
   chooser:show()
 end
 
