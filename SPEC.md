@@ -122,7 +122,11 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 ## Palette UX
 
 - One flat list, frecency-pre-sorted (JSON usage log: count + 7-day recency
-  boost), category + set as each row's subtext. A ~20-line subsequence filter
+  boost), category + set as each row's subtext, and the template's own browser
+  thumbnail (`small.png` inside each Motion template dir) as the row image —
+  loaded lazily for displayed rows only and cached; compiled video/audio
+  effects and presets have no on-disk thumbnail (FCP renders those live), so
+  their rows are text-only. A ~20-line subsequence filter
   runs in `queryChangedCallback` (needed because the fallback rows below
   require the live query, which disables the chooser's built-in filtering);
   substring matches rank above scattered ones; results cap at 50.
@@ -165,9 +169,12 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 - **Phase 0 — spike**: done (all facts above).
 - **Phase 1 — palette + titles/generators/effects/presets**: done, verified
   end-to-end (hotkey → type → Return → clip lands, plus every failure path).
-- **Phase 1.5 — catalog polish**: resolve UUID-named third-party set display
-  names from their `.localized` strings; prune template junk (e.g. `.mExt-*`);
-  reconcile renamed built-ins.
+- **Phase 1.5 — catalog polish**: done — UUID-named third-party sets/items
+  resolve through their `.localized/<lang>.strings` (`{"<UUID>": "Dynamic
+  Title 03"}`); unresolvable UUID names are dropped (unsearchable in the
+  browser); template thumbnails recorded per item. Remaining: reconcile
+  renamed built-ins (strings-lane names like "Gaussian Blur" vs browser
+  "Gaussian").
 - **Phase 2 — transitions**: nearest-edit-point targeting + the "not enough
   extra media" modal guard (an unguarded modal hangs the AX sequence).
   Catalog already scans them; rows stay hidden until this lands.

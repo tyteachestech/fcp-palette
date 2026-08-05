@@ -553,6 +553,7 @@ local function loadChoices()
         id = id,
         name = item.name,
         category = item.category,
+        thumb = item.thumb,
         _hay = (item.name .. " " .. item.category):lower(),
         _score = frecencyScore(log[id], now),
       }
@@ -689,9 +690,26 @@ local function decorated(list)
   return out
 end
 
+-- Browser thumbnails, loaded lazily for displayed rows only (≤52 at a time —
+-- never all 20k) and cached across shows. false = known-bad path.
+local imageCache = {}
+local function withImages(list)
+  for _, c in ipairs(list) do
+    if c.thumb and not c.image then
+      local img = imageCache[c.thumb]
+      if img == nil then
+        img = hs.image.imageFromPath(c.thumb) or false
+        imageCache[c.thumb] = img
+      end
+      if img then c.image = img end
+    end
+  end
+  return list
+end
+
 local function setChoices(list)
-  lastShown = list
-  chooser:choices(decorated(list))
+  lastShown = withImages(list)
+  chooser:choices(decorated(lastShown))
 end
 
 local function pickRow(n)
