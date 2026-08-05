@@ -1,35 +1,63 @@
 -- fcp-palette — Spotlight-style command palette for Final Cut Pro.
--- See SPEC.md. Wire up with:
---   package.path = package.path .. ";/Users/tylerpoelking/content/tools/fcp-palette/?.lua"
---   fcpPalette = require("fcp_palette"); fcpPalette.start()
+-- Architecture (all mechanics verified against FCP 11 by AX spike, 2026-08-05):
+--   * Panels are located via menu commands + where FCP moves keyboard focus,
+--     plus stable AX identifiers — never screen positions, so any window /
+--     workspace layout works.
+--   * Titles/Generators: sidebar root selected via AXSelectedRows on the
+--     outline, exact name typed into the browser search field
+--     (editor/browserMedia/search/textField), first result clicked, then
+--     Edit > Connect to Primary Storyline lands it at the playhead.
+--   * Effects (video/audio/presets): target clip = current timeline selection,
+--     else the TOPMOST clip under the playhead (computed from AXLayoutItem
+--     frames vs the playhead AXValueIndicator, selected by writing
+--     AXSelectedChildren — the C key does nothing when the pointer is parked).
+--     Effect applied by double-clicking the first browser result.
+--   * Every apply is verified: the Edit > Undo menu title must change
+--     (e.g. "Undo Add Video Effect"); otherwise the palette notifies failure.
+--   * The results grids are AX-hollow (no readable items), which is why the
+--     catalog comes from disk (build_catalog.py) and why verification is
+--     post-apply rather than browser-side.
+-- Wire up with:
+--   package.path = package.path .. ";" .. os.getenv("HOME") .. "/content/tools/fcp-palette/?.lua"
+--   fcpPalette = require("fcp_palette").start()
 
 local ax = require("hs.axuielement")
 
 local M = {}
 
 M.config = {
-  hotkey    = { { "alt" }, "space" },
-  stateDir  = os.getenv("HOME") .. "/content/tools/fcp-palette",
-  fcpBundle = "com.apple.FinalCut",
-  -- How long to let FCP's browser filter settle after typing a search (seconds).
-  filterWait = 0.35,
+  hotkey     = { { "alt" }, "space" },
+  stateDir   = os.getenv("HOME") .. "/content/tools/fcp-palette",
+  fcpBundle  = "com.apple.FinalCut",
+  filterWait = 0.45,   -- seconds for FCP's browser filter to settle after typing
+  maxResults = 50,
+  debug      = false,  -- when true, apply flows log to /tmp/fcp-palette.log
 }
+
+local function dbg(s)
+  if not M.config.debug then return end
+  local f = io.open("/tmp/fcp-palette.log", "a")
+  if f then
+    f:write(os.date("%H:%M:%S ") .. s .. "\n")
+    f:close()
+  end
+end
 
 local CATALOG_PATH  = M.config.stateDir .. "/catalog.json"
 local FRECENCY_PATH = M.config.stateDir .. "/frecency.json"
 
--- Category → which FCP browser applies it, and how.
--- browser "sidebar" = Titles and Generators sidebar (connect with Q semantics);
--- browser "effects" = Effects browser (apply to selected clip).
+-- How each category applies. sidebar = Titles & Generators browser (connect at
+-- playhead); effects = Effects browser (apply to target clip).
+-- Transitions are Phase 2 (nearest-edit targeting + no-handles modal guard).
 local CATEGORIES = {
-  Title          = { browser = "sidebar" },
-  Generator      = { browser = "sidebar" },
-  ["Video Effect"] = { browser = "effects" },
-  ["Audio Effect"] = { browser = "effects" },
-  -- Transitions are Phase 2 (nearest-edit targeting + modal guard) — hidden until then.
+  ["Title"]         = { browser = "sidebar", root = "Titles" },
+  ["Generator"]     = { browser = "sidebar", root = "Generators" },
+  ["Video Effect"]  = { browser = "effects" },
+  ["Audio Effect"]  = { browser = "effects" },
+  ["Effect Preset"] = { browser = "effects" },
 }
 
--- ── Small utils ──────────────────────────────────────────────────────────
+-- ── Utils ────────────────────────────────────────────────────────────────
 
 local function readJSON(path)
   local f = io.open(path, "r")
@@ -41,48 +69,442 @@ end
 
 local function writeJSON(path, data)
   local f = io.open(path, "w")
-  if not f then return end
-  f:write(hs.json.encode(data))
-  f:close()
+  if f then f:write(hs.json.encode(data)) f:close() end
 end
 
 local function notify(msg)
   hs.notify.new({ title = "FCP Palette", informativeText = msg }):send()
 end
 
-local function fcp()
-  return hs.application.find(M.config.fcpBundle, true)
+local function sleep(s) hs.timer.usleep(math.floor(s * 1000000)) end
+
+-- Poll fn every 150ms until it returns non-nil or timeout (seconds).
+local function waitFor(fn, timeout)
+  local deadline = hs.timer.secondsSinceEpoch() + (timeout or 2)
+  while hs.timer.secondsSinceEpoch() < deadline do
+    local v = fn()
+    if v ~= nil and v ~= false then return v end
+    sleep(0.15)
+  end
 end
 
--- BFS for the first AX descendant matching pred, depth-capped.
-local function findFirst(root, pred, maxDepth)
-  local queue, i = { { root, 0 } }, 1
-  while queue[i] do
+local function fcp() return hs.application.find(M.config.fcpBundle, true) end
+
+local function attr(el, name) return el and el:attributeValue(name) end
+
+-- Bounded BFS for the first descendant matching pred.
+local function findFirst(root, pred, maxDepth, maxVisits)
+  local queue, i, visits = { { root, 0 } }, 1, 0
+  while queue[i] and visits < (maxVisits or 300) do
     local el, d = queue[i][1], queue[i][2]
     i = i + 1
+    visits = visits + 1
     if pred(el) then return el end
-    if d < maxDepth then
-      for _, c in ipairs(el:attributeValue("AXChildren") or {}) do
+    if d < (maxDepth or 6) then
+      for _, c in ipairs(attr(el, "AXChildren") or {}) do
         queue[#queue + 1] = { c, d + 1 }
       end
     end
   end
 end
 
-local function role(el) return el and el:attributeValue("AXRole") end
-local function subrole(el) return el and el:attributeValue("AXSubrole") end
-
--- A browser cell's display name: its own AXTitle/AXValue, else first static text child.
-local function cellName(el)
-  local t = el:attributeValue("AXTitle") or el:attributeValue("AXDescription")
-  if t and t ~= "" then return t end
-  local st = findFirst(el, function(e)
-    return role(e) == "AXStaticText"
-  end, 3)
-  return st and (st:attributeValue("AXValue") or st:attributeValue("AXTitle"))
+local function rowText(row)
+  local st = findFirst(row, function(e) return attr(e, "AXRole") == "AXStaticText" end, 3, 40)
+  return st and (attr(st, "AXValue") or attr(st, "AXTitle"))
 end
 
--- ── Frecency ─────────────────────────────────────────────────────────────
+-- ── FCP anchors ──────────────────────────────────────────────────────────
+
+local function axApp(app) return ax.applicationElement(app) end
+
+local function parkPointer(app)
+  local win = app:mainWindow()
+  if win then
+    local f = win:frame()
+    -- toolbar strip: outside the timeline, so the skimmer can't hijack edits
+    hs.mouse.absolutePosition({ x = f.x + f.w / 2, y = f.y + 8 })
+  end
+end
+
+-- Go To <target>, return the element FCP focuses (verified: Timeline focuses
+-- the AXLayoutArea; Titles and Generators focuses the browser search field).
+local function goTo(app, target, wantId, wantRole)
+  if not app:selectMenuItem({ "Window", "Go To", target }) then
+    notify("FCP menu missing: Window → Go To → " .. target)
+    return nil
+  end
+  return waitFor(function()
+    local el = attr(axApp(app), "AXFocusedUIElement")
+    if not el then return nil end
+    if wantId and attr(el, "AXIdentifier") ~= wantId then return nil end
+    if wantRole and attr(el, "AXRole") ~= wantRole then return nil end
+    return el
+  end, 3)
+end
+
+-- Current Edit > Undo menu item title — changes after every successful edit,
+-- our universal post-apply verification channel.
+local function undoTitle(app)
+  local mb = attr(axApp(app), "AXMenuBar")
+  for _, m in ipairs(attr(mb, "AXChildren") or {}) do
+    if attr(m, "AXTitle") == "Edit" then
+      local menu = (attr(m, "AXChildren") or {})[1]
+      local first = menu and (attr(menu, "AXChildren") or {})[1]
+      return first and attr(first, "AXTitle")
+    end
+  end
+end
+
+-- Clear a browser search field via its dedicated clear button, verified empty.
+local function clearField(field)
+  local group = attr(field, "AXParent")
+  for _, c in ipairs(attr(group, "AXChildren") or {}) do
+    local id = attr(c, "AXIdentifier") or ""
+    if id:find("clearButton") then c:performAction("AXPress") end
+  end
+  waitFor(function()
+    local v = attr(field, "AXValue")
+    return v == nil or v == "" or v == " "
+  end, 1.5)
+end
+
+-- Returns true only when the field verifiably contains `text` — a silent
+-- typing failure must abort the flow (else the first cell of an UNFILTERED
+-- grid gets applied: the wrong-item failure mode).
+local function typeIntoField(field, text)
+  -- keystrokes go to the frontmost app: make sure that's FCP before typing
+  waitFor(function()
+    local front = hs.application.frontmostApplication()
+    if front and front:bundleID() == M.config.fcpBundle then return true end
+    local target = fcp()
+    if target then target:activate(true) end
+  end, 3)
+  for attempt = 1, 3 do
+    field:setAttributeValue("AXFocused", true)
+    sleep(0.15)
+    clearField(field)
+    field:setAttributeValue("AXFocused", true)
+    sleep(0.1)
+    dbg(string.format("type attempt %d: focused=%s val=[%s] front=%s", attempt,
+      tostring(attr(field, "AXFocused")), tostring(attr(field, "AXValue")),
+      tostring(hs.application.frontmostApplication():name())))
+    hs.eventtap.keyStrokes(text)
+    if waitFor(function() return attr(field, "AXValue") == text end, 2) then
+      sleep(M.config.filterWait)
+      return true
+    end
+    dbg(string.format("type attempt %d failed: val=[%s]", attempt, tostring(attr(field, "AXValue"))))
+  end
+  notify("Couldn't type “" .. text .. "” into FCP's search field — aborted.")
+  return false
+end
+
+-- ── Titles & Generators browser ──────────────────────────────────────────
+
+-- pane (SplitGroup) children: [sidebar ScrollArea>Outline] [Splitter]
+-- [search Group] [results Group>ScrollArea>Grid(hollow)]
+local function sidebarBrowser(app)
+  local field = goTo(app, "Titles and Generators",
+    "editor/browserMedia/search/textField", "AXTextField")
+  if not field then
+    notify("Couldn't focus the Titles & Generators search field.")
+    return nil
+  end
+  local pane = attr(attr(field, "AXParent"), "AXParent")
+  local outline, results
+  for _, c in ipairs(attr(pane, "AXChildren") or {}) do
+    local role = attr(c, "AXRole")
+    if role == "AXScrollArea" then
+      outline = findFirst(c, function(e) return attr(e, "AXRole") == "AXOutline" end, 2, 20)
+    elseif role == "AXGroup" and attr(c, "AXIdentifier") == nil then
+      local g1 = (attr(c, "AXChildren") or {})[1]
+      if g1 and attr(g1, "AXRole") == "AXScrollArea" then results = g1 end
+    end
+  end
+  return { field = field, outline = outline, results = results }
+end
+
+-- Select the "Titles" or "Generators" root row (disclosure level 0).
+-- Verified: AXSelectedRows is writable on this outline.
+local function selectSidebarRoot(browser, rootName)
+  if not browser.outline then return false end
+  local rows = attr(browser.outline, "AXRows") or {}
+  for j = 1, #rows do
+    if attr(rows[j], "AXDisclosureLevel") == 0 then
+      local t = rowText(rows[j])
+      if t == rootName then
+        browser.outline:setAttributeValue("AXSelectedRows", { rows[j] })
+        sleep(0.35)
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function clickFirstResult(results, double)
+  local f = attr(results, "AXFrame")
+  if not f then return false end
+  local pt = { x = f.x + 55, y = f.y + 45 }
+  hs.eventtap.leftClick(pt, 20000)
+  if double then
+    sleep(0.12)
+    local ev = hs.eventtap.event
+    local down = ev.newMouseEvent(ev.types.leftMouseDown, pt)
+    down:setProperty(ev.properties.mouseEventClickState, 2)
+    down:post()
+    local up = ev.newMouseEvent(ev.types.leftMouseUp, pt)
+    up:setProperty(ev.properties.mouseEventClickState, 2)
+    up:post()
+  end
+  sleep(0.3)
+  return true
+end
+
+-- Titles/Generators: select in browser, connect at the playhead.
+local function applyConnected(app, choice)
+  goTo(app, "Timeline", nil, "AXLayoutArea")
+  parkPointer(app)
+  local browser = sidebarBrowser(app)
+  if not browser then return false end
+  local root = CATEGORIES[choice.category].root
+  if not selectSidebarRoot(browser, root) then
+    notify("Couldn't select the " .. root .. " sidebar root.")
+    return false
+  end
+  if not typeIntoField(browser.field, choice.name) then
+    goTo(app, "Timeline")
+    return false
+  end
+  local rf = attr(browser.results, "AXFrame")
+  dbg("connect: results frame=" .. (rf and string.format("(%.0f,%.0f %.0fx%.0f)", rf.x, rf.y, rf.w, rf.h) or "nil"))
+  clickFirstResult(browser.results, false)
+  local enabled = waitFor(function()
+    local m = app:findMenuItem({ "Edit", "Connect to Primary Storyline" })
+    return m and m.enabled
+  end, 2)
+  dbg("connect enabled=" .. tostring(enabled))
+  if not enabled then
+    notify("No FCP result selectable for “" .. choice.name .. "”.")
+    clearField(browser.field)
+    goTo(app, "Timeline")
+    return false
+  end
+  local before = undoTitle(app)
+  parkPointer(app)
+  app:selectMenuItem({ "Edit", "Connect to Primary Storyline" })
+  local changed = waitFor(function() return undoTitle(app) ~= before end, 3)
+  clearField(browser.field)
+  goTo(app, "Timeline")
+  if changed then
+    notify("Connected “" .. choice.name .. "” at the playhead.")
+    return true
+  end
+  notify("Connect didn’t register for “" .. choice.name .. "” — nothing applied.")
+  return false
+end
+
+-- ── Timeline targeting ───────────────────────────────────────────────────
+
+-- Selection, else topmost clip under the playhead (AXSelectedChildren write).
+local function ensureTargetClip(app)
+  local la = goTo(app, "Timeline", nil, "AXLayoutArea")
+  if not la then
+    notify("Couldn't focus the timeline.")
+    return nil
+  end
+  local sel = attr(la, "AXSelectedChildren") or {}
+  if #sel > 0 then return la end
+  local items, playhead = {}, nil
+  local queue, i, visits = { { la, 0 } }, 1, 0
+  while queue[i] and visits < 800 do
+    local e, d = queue[i][1], queue[i][2]
+    i = i + 1
+    visits = visits + 1
+    local role = attr(e, "AXRole")
+    if role == "AXLayoutItem" then
+      items[#items + 1] = { el = e, fr = attr(e, "AXFrame") }
+    elseif role == "AXValueIndicator" then
+      playhead = attr(e, "AXFrame")
+    end
+    if d < 4 then
+      for _, c in ipairs(attr(e, "AXChildren") or {}) do queue[#queue + 1] = { c, d + 1 } end
+    end
+  end
+  if not playhead then
+    notify("Couldn't locate the playhead.")
+    return nil
+  end
+  local px = playhead.x + playhead.w / 2
+  local best
+  for _, it in ipairs(items) do
+    if it.fr and px >= it.fr.x - 3 and px < it.fr.x + it.fr.w then
+      if not best or it.fr.y < best.fr.y then best = it end   -- topmost lane wins
+    end
+  end
+  if not best then
+    notify("No clip under the playhead.")
+    return nil
+  end
+  la:setAttributeValue("AXSelectedChildren", { best.el })
+  local ok = waitFor(function()
+    local s = attr(la, "AXSelectedChildren") or {}
+    return #s > 0
+  end, 1.5)
+  if not ok then
+    notify("Couldn't select the clip under the playhead.")
+    return nil
+  end
+  return la
+end
+
+-- ── Effects browser ──────────────────────────────────────────────────────
+
+-- Find the Effects browser search field. Primary: sibling subtree of the
+-- timeline's ancestor split (default workspaces). Fallback: shallow scan of
+-- every FCP window (covers torn-off/floating workspaces).
+local function effectsField(app, la)
+  local item = app:findMenuItem({ "Window", "Show in Workspace", "Effects" })
+  if item and not item.ticked then
+    app:selectMenuItem({ "Window", "Show in Workspace", "Effects" })
+    sleep(0.6)
+  end
+  local isField = function(e)
+    return attr(e, "AXIdentifier") == "editor/browserContent/search/textField"
+  end
+  local split = attr(attr(la, "AXParent"), "AXParent")
+  local field = split and findFirst(split, isField, 6, 250)
+  if field then return field end
+  for _, win in ipairs(attr(axApp(app), "AXWindows") or {}) do
+    field = findFirst(win, isField, 8, 400)
+    if field then return field end
+  end
+end
+
+local function effectsPaneParts(field)
+  local pane = attr(attr(field, "AXParent"), "AXParent")
+  local tbl = findFirst(pane, function(e) return attr(e, "AXRole") == "AXTable" end, 4, 120)
+  local grid = findFirst(pane, function(e) return attr(e, "AXRole") == "AXGrid" end, 4, 120)
+  return tbl, grid
+end
+
+-- Scope the search to "All Video & Audio" (sidebar table row 1). The table's
+-- AXSelectedRows is NOT writable (verified), so scroll to top and click.
+local function ensureAllScope(tbl)
+  if not tbl then return false end
+  local rows = attr(tbl, "AXRows") or {}
+  local row1 = rows[1]
+  if not row1 or rowText(row1) ~= "All Video & Audio" then return false end
+  if attr(row1, "AXSelected") then return true end
+  local scroll = attr(tbl, "AXParent")
+  for _, c in ipairs(attr(scroll, "AXChildren") or {}) do
+    if attr(c, "AXRole") == "AXScrollBar" then c:setAttributeValue("AXValue", 0.0) end
+  end
+  sleep(0.25)
+  local fr = attr(row1, "AXFrame")
+  local sf = attr(scroll, "AXFrame")
+  if fr and sf and fr.y >= sf.y - 2 and fr.y < sf.y + sf.h - 10 then
+    hs.eventtap.leftClick({ x = fr.x + fr.w / 2, y = fr.y + fr.h / 2 }, 20000)
+    sleep(0.35)
+    return true
+  end
+  -- Scope may already be fine (FCP persists it); search proceeds and the
+  -- undo-title verification catches a scope miss.
+  return true
+end
+
+-- Effects / audio effects / presets: apply to the target clip.
+local function applyEffect(app, choice)
+  dbg("applyEffect start: " .. choice.name)
+  local la = ensureTargetClip(app)
+  dbg("target clip: " .. tostring(la ~= nil))
+  if not la then return false end
+  local field = effectsField(app, la)
+  dbg("effects field: " .. tostring(field ~= nil))
+  if not field then
+    notify("Couldn't find the Effects browser.")
+    return false
+  end
+  local tbl, grid = effectsPaneParts(field)
+  dbg("pane parts tbl=" .. tostring(tbl ~= nil) .. " grid=" .. tostring(grid ~= nil))
+  ensureAllScope(tbl)
+  parkPointer(app)
+  local typed = typeIntoField(field, choice.name)
+  dbg("typed=" .. tostring(typed))
+  if not typed then
+    goTo(app, "Timeline")
+    return false
+  end
+  local gf = grid and attr(grid, "AXFrame")
+  dbg("applyEffect grid=" .. (gf and string.format("(%.0f,%.0f %.0fx%.0f)", gf.x, gf.y, gf.w, gf.h) or "nil"))
+  if not gf or gf.h < 20 then
+    notify("No FCP result for “" .. choice.name .. "”.")
+    clearField(field)
+    goTo(app, "Timeline")
+    return false
+  end
+  local before = undoTitle(app)
+  dbg("undo before=" .. tostring(before))
+  -- The first result's y-offset depends on whether FCP renders a section
+  -- header above it ("Final Cut"/"macOS" vs headerless best-match slot), and
+  -- the grid is AX-hollow, so try a verified ladder of candidate offsets.
+  -- A double-click that lands between cells is a no-op, so each rung is safe.
+  local changed = false
+  for _, dy in ipairs({ 45, 75, 105 }) do
+    local pt = { x = gf.x + 60, y = gf.y + dy }
+    local owner = ax.systemElementAtPosition(pt)
+    local opid = owner and owner:pid()
+    dbg(string.format("rung dy=%d pt=(%.0f,%.0f) ownerPid=%s (fcp=%s)", dy, pt.x, pt.y,
+      tostring(opid), tostring(app:pid())))
+    if opid and opid ~= app:pid() then
+      local other = hs.application.applicationForPID(opid)
+      notify("FCP's Effects browser is covered by “" .. tostring(other and other:name() or "another window")
+        .. "” — move it and retry.")
+      break
+    end
+    hs.eventtap.leftClick(pt, 20000)
+    sleep(0.12)
+    local ev = hs.eventtap.event
+    local down = ev.newMouseEvent(ev.types.leftMouseDown, pt)
+    down:setProperty(ev.properties.mouseEventClickState, 2)
+    down:post()
+    local up = ev.newMouseEvent(ev.types.leftMouseUp, pt)
+    up:setProperty(ev.properties.mouseEventClickState, 2)
+    up:post()
+    changed = waitFor(function() return undoTitle(app) ~= before end, 1.5) and true or false
+    dbg("rung dy=" .. dy .. " changed=" .. tostring(changed) .. " undo=" .. tostring(undoTitle(app)))
+    if changed then break end
+  end
+  clearField(field)
+  goTo(app, "Timeline")
+  if changed then
+    notify("Applied “" .. choice.name .. "” (" .. tostring(undoTitle(app)) .. ").")
+    return true
+  end
+  notify("“" .. choice.name .. "” didn’t apply — nothing changed.")
+  return false
+end
+
+-- Raw-search fallback: filter the chosen browser to the typed text and leave
+-- FCP showing the results for a manual pick.
+local function rawSearch(app, which, query)
+  if which == "sidebar" then
+    local browser = sidebarBrowser(app)
+    if not browser then return end
+    typeIntoField(browser.field, query)
+  else
+    local la = goTo(app, "Timeline", nil, "AXLayoutArea")
+    local field = la and effectsField(app, la)
+    if not field then
+      notify("Couldn't find the Effects browser.")
+      return
+    end
+    typeIntoField(field, query)
+  end
+  notify("FCP filtered to “" .. query .. "” — pick and apply in the browser.")
+end
+
+-- ── Frecency + choices ───────────────────────────────────────────────────
 
 local function frecencyScore(entry, now)
   if not entry then return 0 end
@@ -98,63 +520,60 @@ local function recordUse(id)
   writeJSON(FRECENCY_PATH, log)
 end
 
--- ── Catalog + choices ────────────────────────────────────────────────────
+local allChoices = {}
 
--- catalog.json: [{ name = "Low Pass", category = "Audio Effect" }, ...]
-local function buildChoices()
+local function loadChoices()
   local catalog = readJSON(CATALOG_PATH) or {}
   local log = readJSON(FRECENCY_PATH) or {}
   local now = os.time()
-  local choices = {}
+  allChoices = {}
   for _, item in ipairs(catalog) do
     if CATEGORIES[item.category] then
-      choices[#choices + 1] = {
+      local id = item.category .. "/" .. item.name
+      allChoices[#allChoices + 1] = {
         text = item.name,
-        subText = item.category,
-        id = item.category .. "/" .. item.name,
+        subText = item.category .. (item.set and (" · " .. item.set) or ""),
+        id = id,
         name = item.name,
         category = item.category,
+        _hay = (item.name .. " " .. item.category):lower(),
+        _score = frecencyScore(log[id], now),
       }
     end
   end
-  table.sort(choices, function(a, b)
-    local sa, sb = frecencyScore(log[a.id], now), frecencyScore(log[b.id], now)
-    if sa ~= sb then return sa > sb end
+  table.sort(allChoices, function(a, b)
+    if a._score ~= b._score then return a._score > b._score end
     return a.text < b.text
   end)
-  return choices
 end
 
--- Case-insensitive subsequence match; word-start matches rank above scattered ones.
--- (Needed because queryChangedCallback disables hs.chooser's built-in filter,
--- and we need that callback for the live raw-search fallback rows.)
-local function matchRank(query, hay)
-  hay = hay:lower()
-  if query == "" then return 1 end
-  if hay:find(query, 1, true) then return 3 end
+-- Subsequence filter (queryChangedCallback disables the chooser's built-in
+-- filtering, which we need for the live raw-search fallback rows).
+local function matchRank(q, hay)
+  if hay:find(q, 1, true) then return 3 end
   local pos = 0
-  for ch in query:gmatch(".") do
-    pos = hay:find(ch, pos + 1, true)
+  for ci = 1, #q do
+    pos = hay:find(q:sub(ci, ci), pos + 1, true)
     if not pos then return nil end
   end
   return 2
 end
 
-local function filteredChoices(all, query)
+local function filteredChoices(query)
   local q = query:lower():gsub("^%s+", ""):gsub("%s+$", "")
   local out = {}
-  for _, c in ipairs(all) do
-    local r = matchRank(q, c.text .. " " .. c.subText)
-    if r then
-      c._rank = r
-      out[#out + 1] = c
+  if q == "" then
+    for i = 1, math.min(#allChoices, M.config.maxResults) do out[i] = allChoices[i] end
+  else
+    local exact, fuzzy = {}, {}
+    for _, c in ipairs(allChoices) do
+      local r = matchRank(q, c._hay)
+      if r == 3 then exact[#exact + 1] = c
+      elseif r == 2 then fuzzy[#fuzzy + 1] = c end
+      if #exact >= M.config.maxResults then break end
     end
-  end
-  table.sort(out, function(a, b)
-    if a._rank ~= b._rank then return a._rank > b._rank end
-    return false -- stable: keep frecency presort among equals
-  end)
-  if q ~= "" then
+    for _, c in ipairs(exact) do out[#out + 1] = c end
+    for i = 1, math.min(#fuzzy, M.config.maxResults - #exact) do out[#out + 1] = fuzzy[i] end
     out[#out + 1] = { text = "Search Titles & Generators for “" .. query .. "”",
                       subText = "raw FCP search", fallback = "sidebar", query = query }
     out[#out + 1] = { text = "Search Effects for “" .. query .. "”",
@@ -163,168 +582,9 @@ local function filteredChoices(all, query)
   return out
 end
 
--- ── FCP driving ──────────────────────────────────────────────────────────
+-- ── Palette ──────────────────────────────────────────────────────────────
 
-local function keystrokes(str) hs.eventtap.keyStrokes(str) end
-local function key(mods, k) hs.eventtap.keyStroke(mods, k, 20000) end
-
--- Park the pointer over FCP's toolbar so the skimmer (which beats the playhead
--- for edit commands) can't be over the timeline when we connect/apply.
-local function parkPointer(app)
-  local win = app:mainWindow()
-  if not win then return end
-  local f = win:frame()
-  hs.mouse.absolutePosition({ x = f.x + f.w / 2, y = f.y + 10 })
-end
-
-local function selectMenu(app, path)
-  local ok = app:selectMenuItem(path)
-  if not ok then notify("Menu not found: " .. table.concat(path, " → ")) end
-  return ok
-end
-
--- Show the right browser and return the AX element of FCP's main window.
-local function openBrowser(app, which)
-  if which == "sidebar" then
-    if not selectMenu(app, { "Window", "Go To", "Titles and Generators" }) then return nil end
-  else
-    -- "Effects" under Show in Workspace is a toggle; only select it when unticked.
-    local item = app:findMenuItem({ "Window", "Show in Workspace", "Effects" })
-    if item and not item.ticked then
-      selectMenu(app, { "Window", "Show in Workspace", "Effects" })
-    end
-    -- Focus it either way so the search field is reachable.
-    selectMenu(app, { "Window", "Go To", "Effects" })
-  end
-  hs.timer.usleep(200000)
-  local axApp = ax.applicationElement(app)
-  return axApp and axApp:attributeValue("AXMainWindow")
-end
-
--- The visible search field of the active browser. SPIKE-VERIFY: disambiguation
--- if multiple search fields are exposed at once.
-local function browserSearchField(win)
-  return findFirst(win, function(el)
-    if subrole(el) ~= "AXSearchField" then return false end
-    local f = el:attributeValue("AXFrame")
-    return f and f.w > 0 and f.h > 0
-  end, 14)
-end
-
-local function setSearch(field, text)
-  field:setAttributeValue("AXFocused", true)
-  hs.timer.usleep(100000)
-  key({ "cmd" }, "a")
-  key({}, "delete")
-  if text and text ~= "" then keystrokes(text) end
-  hs.timer.usleep(M.config.filterWait * 1000000)
-end
-
--- First result cell in the browser under `win` after filtering.
-local function firstResultCell(win)
-  return findFirst(win, function(el)
-    local r = role(el)
-    return (r == "AXCell" or subrole(el) == "AXCollectionItem" or r == "AXGroup")
-      and cellName(el) ~= nil
-      and el:attributeValue("AXFrame") ~= nil
-      and el:attributeValue("AXFrame").h > 0
-      -- SPIKE-VERIFY: tighten this predicate to the browser's actual cell shape.
-  end, 16)
-end
-
-local function timelineSelectionCount(win)
-  local la = findFirst(win, function(el) return role(el) == "AXLayoutArea" end, 12)
-  if not la then return nil end
-  local sel = la:attributeValue("AXSelectedChildren")
-  return sel and #sel or 0
-end
-
-local function backToTimeline(app)
-  selectMenu(app, { "Window", "Go To", "Timeline" })
-end
-
--- Find + select `name` in the browser; returns the cell or nil (with notify).
-local function locateItem(app, which, name, verify)
-  local win = openBrowser(app, which)
-  if not win then return nil end
-  local field = browserSearchField(win)
-  if not field then
-    notify("Couldn't find the browser search field.")
-    return nil
-  end
-  setSearch(field, name)
-  local cell = firstResultCell(win)
-  if not cell then
-    notify("No FCP result for “" .. name .. "”.")
-    setSearch(field, "")
-    return nil
-  end
-  local got = cellName(cell)
-  if verify and got and got:lower() ~= name:lower() then
-    notify("Top result is “" .. got .. "”, not “" .. name .. "” — aborted.")
-    setSearch(field, "")
-    return nil
-  end
-  return cell, field, win
-end
-
-local function clickCell(cell, double)
-  local f = cell:attributeValue("AXFrame")
-  local pt = { x = f.x + f.w / 2, y = f.y + f.h / 2 }
-  if double then
-    hs.eventtap.leftClick(pt, 20000)
-    hs.timer.usleep(80000)
-    hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.leftMouseDown, pt):setProperty(
-      hs.eventtap.event.properties.mouseEventClickState, 2):post()
-    hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.leftMouseUp, pt):setProperty(
-      hs.eventtap.event.properties.mouseEventClickState, 2):post()
-  else
-    hs.eventtap.leftClick(pt, 20000)
-  end
-end
-
--- ── Apply strategies ─────────────────────────────────────────────────────
-
--- Titles/Generators: select in sidebar browser, connect at the playhead (Q).
-local function applyConnected(app, name, verify)
-  local cell, field = locateItem(app, "sidebar", name, verify)
-  if not cell then return false end
-  clickCell(cell, false)                  -- select (single click; pointer now over browser, not timeline)
-  hs.timer.usleep(150000)
-  parkPointer(app)
-  if not selectMenu(app, { "Edit", "Connect to Primary Storyline" }) then return false end
-  hs.timer.usleep(150000)
-  if field then setSearch(field, "") end  -- leave the browser clean
-  backToTimeline(app)
-  return true
-end
-
--- Effects: ensure a clip is targeted, then double-click the effect cell.
-local function applyEffect(app, name, verify)
-  -- Target resolution BEFORE we disturb focus: selection, else clip under playhead.
-  do
-    local axApp = ax.applicationElement(app)
-    local win = axApp and axApp:attributeValue("AXMainWindow")
-    local count = win and timelineSelectionCount(win)
-    if count == 0 or count == nil then
-      -- C = Select Clip (clip under the playhead). Needs timeline focus and the
-      -- pointer out of the timeline so the pointer-hover rule doesn't pick a
-      -- different clip. SPIKE-VERIFY both.
-      parkPointer(app)
-      backToTimeline(app)
-      hs.timer.usleep(100000)
-      key({}, "c")
-      hs.timer.usleep(150000)
-    end
-  end
-  local cell, field = locateItem(app, "effects", name, verify)
-  if not cell then return false end
-  clickCell(cell, true)                   -- double-click applies to the selected clip
-  hs.timer.usleep(200000)
-  if field then setSearch(field, "") end
-  backToTimeline(app)
-  return true
-end
+local chooser
 
 local function applyChoice(choice)
   local app = fcp()
@@ -332,114 +592,56 @@ local function applyChoice(choice)
     notify("Final Cut Pro isn't running.")
     return
   end
-  app:activate()
-  hs.timer.usleep(150000)
-
-  local ok
+  app:activate(true)
+  sleep(0.2)
   if choice.fallback then
-    -- Raw search: drive the browser with the typed text, no catalog, no verify —
-    -- leave FCP showing the filtered browser for the user to pick from.
-    local cell = locateItem(app, choice.fallback, choice.query, false)
-    ok = cell ~= nil
-    if ok then notify("FCP browser filtered to “" .. choice.query .. "” — pick and apply there.") end
-  else
-    local cat = CATEGORIES[choice.category]
-    if cat.browser == "sidebar" then
-      ok = applyConnected(app, choice.name, true)
-    else
-      ok = applyEffect(app, choice.name, true)
-    end
-    if ok then recordUse(choice.id) end
-  end
-end
-
--- ── Catalog scrape (Phase 1: visible/realized rows; Phase 1.5 adds scrolling) ──
-
-local SCRAPE_SOURCES = {
-  { which = "sidebar", sidebarItem = "Titles",     category = "Title" },
-  { which = "sidebar", sidebarItem = "Generators", category = "Generator" },
-  { which = "effects", sidebarItem = "All Video",  category = "Video Effect" },
-  { which = "effects", sidebarItem = "All Audio",  category = "Audio Effect" },
-}
-
-function M.refreshCatalog()
-  local app = fcp()
-  if not app then
-    notify("Final Cut Pro isn't running.")
+    rawSearch(app, choice.fallback, choice.query)
     return
   end
-  app:activate()
-  local items, seen = {}, {}
-  for _, src in ipairs(SCRAPE_SOURCES) do
-    local win = openBrowser(app, src.which)
-    if win then
-      local field = browserSearchField(win)
-      if field then setSearch(field, "") end
-      -- Select the source's sidebar row (e.g. "All Video") so the list shows
-      -- the whole category. SPIKE-VERIFY the row AX shape.
-      local rowEl = findFirst(win, function(el)
-        return (role(el) == "AXStaticText" or role(el) == "AXRow" or role(el) == "AXCell")
-          and (cellName(el) == src.sidebarItem
-               or el:attributeValue("AXValue") == src.sidebarItem)
-      end, 14)
-      if rowEl then
-        local f = rowEl:attributeValue("AXFrame")
-        if f then hs.eventtap.leftClick({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, 20000) end
-        hs.timer.usleep(300000)
-      end
-      -- Collect every named cell currently exposed by AX.
-      local root = win
-      local queue, i = { { root, 0 } }, 1
-      while queue[i] do
-        local el, d = queue[i][1], queue[i][2]
-        i = i + 1
-        local r = role(el)
-        if (r == "AXCell" or subrole(el) == "AXCollectionItem") then
-          local n = cellName(el)
-          if n and not seen[src.category .. "/" .. n] then
-            seen[src.category .. "/" .. n] = true
-            items[#items + 1] = { name = n, category = src.category }
-          end
-        end
-        if d < 16 then
-          for _, c in ipairs(el:attributeValue("AXChildren") or {}) do
-            queue[#queue + 1] = { c, d + 1 }
-          end
-        end
-      end
-    end
+  local ok
+  if CATEGORIES[choice.category].browser == "sidebar" then
+    ok = applyConnected(app, choice)
+  else
+    ok = applyEffect(app, choice)
   end
-  writeJSON(CATALOG_PATH, items)
-  notify(("Catalog refreshed: %d items."):format(#items))
-  backToTimeline(app)
+  if ok then recordUse(choice.id) end
 end
-
--- ── Palette ──────────────────────────────────────────────────────────────
-
-local chooser
-local allChoices = {}
 
 local function showPalette()
   if not fcp() then
     notify("Final Cut Pro isn't running.")
     return
   end
-  allChoices = buildChoices()
+  loadChoices()
   chooser:query("")
-  chooser:choices(filteredChoices(allChoices, ""))
+  chooser:choices(filteredChoices(""))
   chooser:show()
+end
+
+-- Scripted apply (also used by the test harness): fcpPalette.apply("Title", "Basic Title")
+function M.apply(category, name)
+  applyChoice({ category = category, name = name, id = category .. "/" .. name })
+end
+
+function M.refreshCatalog()
+  hs.task.new("/usr/bin/python3", function(code, stdout, stderr)
+    if code == 0 then
+      notify("Catalog refreshed: " .. (stdout:match("^(%d+ items)") or "done") .. ".")
+    else
+      notify("Catalog refresh failed: " .. tostring(stderr))
+    end
+  end, { M.config.stateDir .. "/build_catalog.py" }):start()
 end
 
 function M.start()
   chooser = hs.chooser.new(function(choice)
     if choice then applyChoice(choice) end
   end)
-  chooser:queryChangedCallback(function(q)
-    chooser:choices(filteredChoices(allChoices, q))
-  end)
+  chooser:queryChangedCallback(function(q) chooser:choices(filteredChoices(q)) end)
   chooser:placeholderText("Titles, generators, effects…")
-  chooser:searchSubText(false) -- we filter ourselves
   M.hotkeyObj = hs.hotkey.bind(M.config.hotkey[1], M.config.hotkey[2], showPalette)
+  M.chooser = chooser
+  M.show = showPalette
   return M
 end
 
