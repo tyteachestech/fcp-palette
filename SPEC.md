@@ -148,6 +148,13 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
   with eventtaps that run only while the palette is visible.
 - Hammerspoon gotcha baked in: `hs.timer.doAfter` handles must be anchored in
   module-level variables — unreferenced timers are GC'd before firing.
+- **Self-healing catalog**: some third-party packs ship template folders FCP's
+  browser refuses to show (verified: FCB's Pro Zooms "+" theme — on disk with
+  valid .moti files, invisible to browser search; no reliable on-disk marker
+  distinguishes them). The disk scan can't predict this, so when a
+  verified-typed search selects nothing, the item is tombstoned in
+  `missing.json` and never offered again; `fcpPalette.resetMissing()` clears
+  the list (e.g. after a plugin update).
 - All failures surface as notifications with the reason; nothing fails silent.
 - Scripting surface: `fcpPalette.apply(category, name)`, `.show()`,
   `.refreshCatalog()`, `.config.debug = true` (logs to `/tmp/fcp-palette.log`).

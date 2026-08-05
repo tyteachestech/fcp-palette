@@ -42,6 +42,7 @@ python3 build_catalog.py
 | Change hotkey | `M.config.hotkey` at the top of `fcp_palette.lua` |
 | Debug a flow | `fcpPalette.config.debug = true` → `/tmp/fcp-palette.log` |
 | Scripted apply | `fcpPalette.apply("Video Effect", "Gaussian")` |
+| Restore items auto-hidden as not-in-browser | `hs -c 'fcpPalette.resetMissing()'` |
 
 `catalog.json`, `catalog.lua`, and `frecency.json` are runtime state
 (git-ignored). The palette loads `catalog.lua` (`hs.json.decode` freezes

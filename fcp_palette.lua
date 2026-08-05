@@ -22,6 +22,14 @@
 --   fcpPalette = require("fcp_palette").start()
 
 local ax = require("hs.axuielement")
+-- Preload every extension used inside callbacks: loading one lazily mid-flow
+-- (e.g. hs.json on the first frecency/tombstone write) errors out of the
+-- callback with only an "hs.ipc … recursing" storm as evidence.
+require("hs.json")
+require("hs.fs")
+require("hs.image")
+require("hs.canvas")
+require("hs.styledtext")
 
 local M = {}
 
@@ -49,6 +57,11 @@ end
 -- this size and freezes Hammerspoon's main thread; dofile takes milliseconds.
 local CATALOG_PATH  = M.config.stateDir .. "/catalog.lua"
 local FRECENCY_PATH = M.config.stateDir .. "/frecency.json"
+-- Items FCP's browser verifiably doesn't show (some third-party packs ship
+-- template folders FCP hides — e.g. FCB's Pro Zooms "+" variants). The disk
+-- scan can't predict this, so the palette learns: a verified-typed search
+-- that selects nothing tombstones the item here and stops offering it.
+local MISSING_PATH  = M.config.stateDir .. "/missing.json"
 
 -- How each category applies. sidebar = Titles & Generators browser (connect at
 -- playhead); effects = Effects browser (apply to target clip).
@@ -265,6 +278,21 @@ local function clickFirstResult(results, double)
   return true
 end
 
+-- FCP searched clean for this exact name and offered nothing: the item is not
+-- in the browser. Tombstone it so the palette stops offering it.
+local function markMissing(choice)
+  dbg("markMissing id=" .. tostring(choice.id))
+  if not choice.id then return end
+  local ok, err = pcall(function()
+    local log = readJSON(MISSING_PATH) or {}
+    log[choice.id] = os.time()
+    writeJSON(MISSING_PATH, log)
+  end)
+  dbg("markMissing write ok=" .. tostring(ok) .. " err=" .. tostring(err))
+  notify("FCP's browser has no “" .. choice.name
+    .. "” — hidden from the palette (fcpPalette.resetMissing() restores).")
+end
+
 -- Titles/Generators: select in browser, connect at the playhead.
 local function applyConnected(app, choice)
   goTo(app, "Timeline", nil, "AXLayoutArea")
@@ -289,7 +317,7 @@ local function applyConnected(app, choice)
   end, 2)
   dbg("connect enabled=" .. tostring(enabled))
   if not enabled then
-    notify("No FCP result selectable for “" .. choice.name .. "”.")
+    markMissing(choice)
     clearField(browser.field)
     goTo(app, "Timeline")
     return false
@@ -442,7 +470,7 @@ local function applyEffect(app, choice)
   local gf = grid and attr(grid, "AXFrame")
   dbg("applyEffect grid=" .. (gf and string.format("(%.0f,%.0f %.0fx%.0f)", gf.x, gf.y, gf.w, gf.h) or "nil"))
   if not gf or gf.h < 20 then
-    notify("No FCP result for “" .. choice.name .. "”.")
+    markMissing(choice)
     clearField(field)
     goTo(app, "Timeline")
     return false
@@ -542,10 +570,11 @@ end
 local function loadChoices()
   local catalog = loadCatalog()
   local log = readJSON(FRECENCY_PATH) or {}
+  local missing = readJSON(MISSING_PATH) or {}
   local now = os.time()
   allChoices = {}
   for _, item in ipairs(catalog) do
-    if CATEGORIES[item.category] then
+    if CATEGORIES[item.category] and not missing[item.category .. "/" .. item.name] then
       local id = item.category .. "/" .. item.name
       allChoices[#allChoices + 1] = {
         text = item.name,
@@ -778,6 +807,13 @@ end
 -- Scripted apply (also used by the test harness): fcpPalette.apply("Title", "Basic Title")
 function M.apply(category, name)
   applyChoice({ category = category, name = name, id = category .. "/" .. name })
+end
+
+-- Forget every tombstoned item (e.g. after installing an update that makes
+-- previously-hidden templates appear in FCP's browser).
+function M.resetMissing()
+  os.remove(MISSING_PATH)
+  notify("Cleared the missing-item list.")
 end
 
 function M.refreshCatalog()
