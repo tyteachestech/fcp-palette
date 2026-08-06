@@ -28,8 +28,8 @@ python3 build_catalog.py
   - Effects apply to the selected clip, else the topmost clip under the
     playhead.
   - The last two rows raw-search FCP's own browser when the catalog misses.
-- Hold **⌘** to see ⌘1–⌘9 badges on the first nine rows; press ⌘*n* to apply
-  that row directly.
+- **⌘1–⌘9** applies one of the first nine rows directly (Hammerspoon's own
+  chooser shortcut — its always-visible badge column can't be hidden).
 - Close with **Esc**, **⌘W**, the **✕** in the top-right, or by clicking
   anywhere outside the palette.
 - Every apply is verified; failures arrive as notifications, never silently.

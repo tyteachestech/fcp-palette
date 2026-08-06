@@ -29,7 +29,6 @@ require("hs.json")
 require("hs.fs")
 require("hs.image")
 require("hs.canvas")
-require("hs.styledtext")
 require("hs.task")
 require("hs.pathwatcher")
 
@@ -41,7 +40,6 @@ M.config = {
   hotkey     = { { "shift" }, "space" },
   stateDir   = os.getenv("HOME") .. "/content/tools/fcp-palette",
   fcpBundle  = "com.apple.FinalCut",
-  filterWait = 0.45,   -- seconds for FCP's browser filter to settle after typing
   maxResults = 50,
   debug      = false,  -- when true, apply flows log to /tmp/fcp-palette.log
 }
@@ -50,7 +48,9 @@ local function dbg(s)
   if not M.config.debug then return end
   local f = io.open("/tmp/fcp-palette.log", "a")
   if f then
-    f:write(os.date("%H:%M:%S ") .. s .. "\n")
+    local now = hs.timer.secondsSinceEpoch()
+    f:write(os.date("%H:%M:%S", math.floor(now))
+      .. string.format(".%03d ", math.floor((now % 1) * 1000)) .. s .. "\n")
     f:close()
   end
 end
@@ -97,13 +97,15 @@ end
 
 local function sleep(s) hs.timer.usleep(math.floor(s * 1000000)) end
 
--- Poll fn every 150ms until it returns non-nil or timeout (seconds).
-local function waitFor(fn, timeout)
+-- Poll fn until it returns non-nil or timeout (seconds). The poll interval is
+-- small on purpose: every wait in an apply used to overshoot by up to a full
+-- interval, and there are half a dozen of them per apply.
+local function waitFor(fn, timeout, interval)
   local deadline = hs.timer.secondsSinceEpoch() + (timeout or 2)
   while hs.timer.secondsSinceEpoch() < deadline do
     local v = fn()
     if v ~= nil and v ~= false then return v end
-    sleep(0.15)
+    sleep(interval or 0.03)
   end
 end
 
@@ -200,16 +202,16 @@ local function typeIntoField(field, text)
   end, 3)
   for attempt = 1, 3 do
     field:setAttributeValue("AXFocused", true)
-    sleep(0.15)
+    waitFor(function() return attr(field, "AXFocused") end, 0.5)
     clearField(field)
     field:setAttributeValue("AXFocused", true)
-    sleep(0.1)
     dbg(string.format("type attempt %d: focused=%s val=[%s] front=%s", attempt,
       tostring(attr(field, "AXFocused")), tostring(attr(field, "AXValue")),
       tostring(hs.application.frontmostApplication():name())))
     hs.eventtap.keyStrokes(text)
+    -- The grid settle (waitForCell) is what gates the click, so no fixed
+    -- filter sleep here.
     if waitFor(function() return attr(field, "AXValue") == text end, 2) then
-      sleep(M.config.filterWait)
       return true
     end
     dbg(string.format("type attempt %d failed: val=[%s]", attempt, tostring(attr(field, "AXValue"))))
@@ -240,7 +242,8 @@ local function sidebarBrowser(app)
       if g1 and attr(g1, "AXRole") == "AXScrollArea" then results = g1 end
     end
   end
-  return { field = field, outline = outline, results = results }
+  local grid = findFirst(pane, function(e) return attr(e, "AXRole") == "AXGrid" end, 5, 120)
+  return { field = field, outline = outline, results = results, grid = grid }
 end
 
 -- Select the "Titles" or "Generators" root row (disclosure level 0).
@@ -252,8 +255,9 @@ local function selectSidebarRoot(browser, rootName)
     if attr(rows[j], "AXDisclosureLevel") == 0 then
       local t = rowText(rows[j])
       if t == rootName then
-        browser.outline:setAttributeValue("AXSelectedRows", { rows[j] })
-        sleep(0.35)
+        local row = rows[j]
+        browser.outline:setAttributeValue("AXSelectedRows", { row })
+        waitFor(function() return attr(row, "AXSelected") end, 1)
         return true
       end
     end
@@ -261,13 +265,70 @@ local function selectSidebarRoot(browser, rootName)
   return false
 end
 
-local function clickFirstResult(results, double)
-  local f = attr(results, "AXFrame")
+-- Wait for the browser grid to reflect the typed query, and return the cell to
+-- click. Verified on FCP 11: result grids are NOT hollow — each cell is an
+-- AXImage whose AXTitle is the item name, with a real AXFrame. So the filter
+-- is *observed* settling (no fixed sleep), the exact-named cell is picked
+-- (rather than trusting cell 1), and its frame gives an exact click point
+-- (rather than guessing y-offsets past section headers).
+--
+-- Returns: cell, exact  — cell nil means the browser genuinely has no result.
+local function waitForCell(grid, name, timeout)
+  if not grid then return nil, false end
+  local want = name:lower()
+  local now = hs.timer.secondsSinceEpoch
+  local deadline = now() + (timeout or 3)
+  -- The grid still holds the UNFILTERED list for ~250ms after typing, and that
+  -- list contains the wanted name too — so matching on title alone picks a
+  -- cell at its stale position and the click lands on nothing. Wait for the
+  -- count to actually change and then hold still before reading any cell.
+  local startCount = #(attr(grid, "AXChildren") or {})
+  local lastCount, stableAt, refiltered = startCount, now(), false
+  local function pick(kids)
+    for _, c in ipairs(kids) do
+      local t = attr(c, "AXTitle")
+      if t and t:lower() == want then return c, true end
+    end
+    return kids[1], false   -- FCP's search is fuzzy; accept its best match
+  end
+  while now() < deadline do
+    local kids = attr(grid, "AXChildren") or {}
+    if #kids ~= lastCount then
+      lastCount, stableAt = #kids, now()
+      refiltered = refiltered or (#kids ~= startCount)
+    elseif refiltered and now() - stableAt >= 0.15 then
+      return pick(kids)
+    end
+    sleep(0.025)
+  end
+  -- Never saw the grid re-filter: fall back to what's showing rather than
+  -- calling the item missing (the undo verification still gates the apply).
+  return pick(attr(grid, "AXChildren") or {})
+end
+
+-- NOTE: the browser grid's AXSelectedChildren is writable and a write does
+-- register (AXSelectedChildren reads back, "Connect to Primary Storyline"
+-- reads as enabled) — but the connect then does nothing: FCP's internal
+-- browser selection is not driven by the AX write. Falsified 2026-08-05;
+-- don't re-try it as a way to skip the click.
+--
+-- Click a specific grid cell (double-click applies effects). The occlusion
+-- check runs on the actual point about to be clicked.
+local function clickCell(app, cell, double)
+  local f = attr(cell, "AXFrame")
   if not f then return false end
-  local pt = { x = f.x + 55, y = f.y + 45 }
+  local pt = { x = f.x + f.w / 2, y = f.y + f.h / 2 }
+  local owner = ax.systemElementAtPosition(pt)
+  local opid = owner and owner:pid()
+  if opid and opid ~= app:pid() then
+    local other = hs.application.applicationForPID(opid)
+    notify("FCP's browser is covered by “" .. tostring(other and other:name() or "another window")
+      .. "” — move it and retry.")
+    return false
+  end
   hs.eventtap.leftClick(pt, 20000)
   if double then
-    sleep(0.12)
+    sleep(0.08)
     local ev = hs.eventtap.event
     local down = ev.newMouseEvent(ev.types.leftMouseDown, pt)
     down:setProperty(ev.properties.mouseEventClickState, 2)
@@ -276,7 +337,6 @@ local function clickFirstResult(results, double)
     up:setProperty(ev.properties.mouseEventClickState, 2)
     up:post()
   end
-  sleep(0.3)
   return true
 end
 
@@ -295,47 +355,110 @@ local function markMissing(choice)
     .. "” — hidden from the palette (fcpPalette.resetMissing() restores).")
 end
 
+-- Count timeline clips with exactly this AXDescription ("Title:Basic Title").
+-- The AX tree reaches the same clip by several paths, so dedupe by position.
+local function countClips(la, desc)
+  local n, seen = 0, {}
+  local queue, i, visits = { { la, 0 } }, 1, 0
+  while queue[i] and visits < 800 do
+    local e, d = queue[i][1], queue[i][2]
+    i = i + 1
+    visits = visits + 1
+    if attr(e, "AXRole") == "AXLayoutItem" and attr(e, "AXDescription") == desc then
+      local fr = attr(e, "AXFrame")
+      local key = fr and string.format("%.0f,%.0f", fr.x, fr.y) or tostring(visits)
+      if not seen[key] then seen[key] = true n = n + 1 end
+    end
+    if d < 4 then
+      for _, c in ipairs(attr(e, "AXChildren") or {}) do queue[#queue + 1] = { c, d + 1 } end
+    end
+  end
+  return n
+end
+
+local CONNECT_UNDO = "Undo Connect to Primary Storyline"
+
 -- Titles/Generators: select in browser, connect at the playhead.
 local function applyConnected(app, choice)
-  goTo(app, "Timeline", nil, "AXLayoutArea")
+  dbg("STAGE goToTimeline")
+  local la = goTo(app, "Timeline", nil, "AXLayoutArea")
+  -- Verification plan, decided BEFORE anything changes: the Undo menu title
+  -- only proves an apply when it *changes*, so a second connect in a row
+  -- (identical title) is invisible to it — that reads as "nothing applied"
+  -- while the clip really landed. In that case, count the matching clips
+  -- instead. The count scan runs only on a repeat, so the common path stays
+  -- one cheap menu read.
+  local clipDesc = (choice.category == "Generator" and "Generator:" or "Title:") .. choice.name
+  local undoBefore = undoTitle(app)
+  local repeatApply = (undoBefore == CONNECT_UNDO)
+  local clipsBefore = repeatApply and la and countClips(la, clipDesc) or nil
+  dbg("repeatApply=" .. tostring(repeatApply) .. " clipsBefore=" .. tostring(clipsBefore))
   parkPointer(app)
+  dbg("STAGE sidebarBrowser")
   local browser = sidebarBrowser(app)
   if not browser then return false end
   local root = CATEGORIES[choice.category].root
+  dbg("STAGE selectRoot")
   if not selectSidebarRoot(browser, root) then
     notify("Couldn't select the " .. root .. " sidebar root.")
     return false
   end
+  dbg("STAGE type")
   if not typeIntoField(browser.field, choice.name) then
     goTo(app, "Timeline")
     return false
   end
-  local rf = attr(browser.results, "AXFrame")
-  dbg("connect: results frame=" .. (rf and string.format("(%.0f,%.0f %.0fx%.0f)", rf.x, rf.y, rf.w, rf.h) or "nil"))
-  clickFirstResult(browser.results, false)
+  dbg("STAGE settle")
+  local cell, exact = waitForCell(browser.grid, choice.name)
+  dbg("cell=" .. tostring(cell and attr(cell, "AXTitle")) .. " exact=" .. tostring(exact))
+  if not cell then
+    markMissing(choice)
+    clearField(browser.field)
+    goTo(app, "Timeline")
+    return false
+  end
+  dbg("STAGE click")
+  if not clickCell(app, cell, false) then
+    clearField(browser.field)
+    goTo(app, "Timeline")
+    return false
+  end
   local enabled = waitFor(function()
     local m = app:findMenuItem({ "Edit", "Connect to Primary Storyline" })
     return m and m.enabled
   end, 2)
   dbg("connect enabled=" .. tostring(enabled))
   if not enabled then
-    markMissing(choice)
+    notify("Couldn’t select “" .. choice.name .. "” in the browser — nothing applied.")
     clearField(browser.field)
     goTo(app, "Timeline")
     return false
   end
-  local before = undoTitle(app)
-  parkPointer(app)
+  dbg("STAGE connect")
+  parkPointer(app)   -- skimmer beats the playhead: the pointer must be off the timeline
   app:selectMenuItem({ "Edit", "Connect to Primary Storyline" })
-  local changed = waitFor(function() return undoTitle(app) ~= before end, 3)
-  clearField(browser.field)
-  goTo(app, "Timeline")
+  dbg("STAGE menu returned")
+  local changed
+  if not repeatApply then
+    changed = waitFor(function() return undoTitle(app) == CONNECT_UNDO end, 3)
+  else
+    local la2 = goTo(app, "Timeline", nil, "AXLayoutArea")
+    changed = la2 and waitFor(function()
+      return countClips(la2, clipDesc) > clipsBefore
+    end, 3)
+  end
+  dbg("STAGE verify done changed=" .. tostring(changed))
+  -- Notify before cleanup: the cleanup (clear field, refocus timeline) is
+  -- ~0.5s the user shouldn't have to wait through to learn the outcome.
   if changed then
     notify("Connected “" .. choice.name .. "” at the playhead.")
-    return true
+  else
+    notify("Connect didn’t register for “" .. choice.name .. "” — nothing applied.")
   end
-  notify("Connect didn’t register for “" .. choice.name .. "” — nothing applied.")
-  return false
+  clearField(browser.field)
+  goTo(app, "Timeline")
+  dbg("STAGE cleanup done")
+  return changed and true or false
 end
 
 -- ── Timeline targeting ───────────────────────────────────────────────────
@@ -398,21 +521,24 @@ end
 -- timeline's ancestor split (default workspaces). Fallback: shallow scan of
 -- every FCP window (covers torn-off/floating workspaces).
 local function effectsField(app, la)
-  local item = app:findMenuItem({ "Window", "Show in Workspace", "Effects" })
-  if item and not item.ticked then
-    app:selectMenuItem({ "Window", "Show in Workspace", "Effects" })
-    sleep(0.6)
-  end
   local isField = function(e)
     return attr(e, "AXIdentifier") == "editor/browserContent/search/textField"
   end
   local split = attr(attr(la, "AXParent"), "AXParent")
-  local field = split and findFirst(split, isField, 6, 250)
-  if field then return field end
-  for _, win in ipairs(attr(axApp(app), "AXWindows") or {}) do
-    field = findFirst(win, isField, 8, 400)
-    if field then return field end
+  local find = function()
+    local f = split and findFirst(split, isField, 6, 250)
+    if f then return f end
+    for _, win in ipairs(attr(axApp(app), "AXWindows") or {}) do
+      f = findFirst(win, isField, 8, 400)
+      if f then return f end
+    end
   end
+  local item = app:findMenuItem({ "Window", "Show in Workspace", "Effects" })
+  if item and not item.ticked then
+    app:selectMenuItem({ "Window", "Show in Workspace", "Effects" })
+    return waitFor(find, 3)   -- the panel animates in; poll instead of sleeping
+  end
+  return find()
 end
 
 local function effectsPaneParts(field)
@@ -434,12 +560,14 @@ local function ensureAllScope(tbl)
   for _, c in ipairs(attr(scroll, "AXChildren") or {}) do
     if attr(c, "AXRole") == "AXScrollBar" then c:setAttributeValue("AXValue", 0.0) end
   end
-  sleep(0.25)
-  local fr = attr(row1, "AXFrame")
   local sf = attr(scroll, "AXFrame")
-  if fr and sf and fr.y >= sf.y - 2 and fr.y < sf.y + sf.h - 10 then
+  local fr = waitFor(function()   -- wait for row 1 to scroll into view
+    local f = attr(row1, "AXFrame")
+    if f and sf and f.y >= sf.y - 2 and f.y < sf.y + sf.h - 10 then return f end
+  end, 1)
+  if fr then
     hs.eventtap.leftClick({ x = fr.x + fr.w / 2, y = fr.y + fr.h / 2 }, 20000)
-    sleep(0.35)
+    waitFor(function() return attr(row1, "AXSelected") end, 1)
     return true
   end
   -- Scope may already be fine (FCP persists it); search proceeds and the
@@ -469,9 +597,9 @@ local function applyEffect(app, choice)
     goTo(app, "Timeline")
     return false
   end
-  local gf = grid and attr(grid, "AXFrame")
-  dbg("applyEffect grid=" .. (gf and string.format("(%.0f,%.0f %.0fx%.0f)", gf.x, gf.y, gf.w, gf.h) or "nil"))
-  if not gf or gf.h < 20 then
+  local cell, exact = waitForCell(grid, choice.name)
+  dbg("cell=" .. tostring(cell and attr(cell, "AXTitle")) .. " exact=" .. tostring(exact))
+  if not cell then
     markMissing(choice)
     clearField(field)
     goTo(app, "Timeline")
@@ -479,44 +607,25 @@ local function applyEffect(app, choice)
   end
   local before = undoTitle(app)
   dbg("undo before=" .. tostring(before))
-  -- The first result's y-offset depends on whether FCP renders a section
-  -- header above it ("Final Cut"/"macOS" vs headerless best-match slot), and
-  -- the grid is AX-hollow, so try a verified ladder of candidate offsets.
-  -- A double-click that lands between cells is a no-op, so each rung is safe.
   local changed = false
-  for _, dy in ipairs({ 45, 75, 105 }) do
-    local pt = { x = gf.x + 60, y = gf.y + dy }
-    local owner = ax.systemElementAtPosition(pt)
-    local opid = owner and owner:pid()
-    dbg(string.format("rung dy=%d pt=(%.0f,%.0f) ownerPid=%s (fcp=%s)", dy, pt.x, pt.y,
-      tostring(opid), tostring(app:pid())))
-    if opid and opid ~= app:pid() then
-      local other = hs.application.applicationForPID(opid)
-      notify("FCP's Effects browser is covered by “" .. tostring(other and other:name() or "another window")
-        .. "” — move it and retry.")
-      break
-    end
-    hs.eventtap.leftClick(pt, 20000)
-    sleep(0.12)
-    local ev = hs.eventtap.event
-    local down = ev.newMouseEvent(ev.types.leftMouseDown, pt)
-    down:setProperty(ev.properties.mouseEventClickState, 2)
-    down:post()
-    local up = ev.newMouseEvent(ev.types.leftMouseUp, pt)
-    up:setProperty(ev.properties.mouseEventClickState, 2)
-    up:post()
-    changed = waitFor(function() return undoTitle(app) ~= before end, 1.5) and true or false
-    dbg("rung dy=" .. dy .. " changed=" .. tostring(changed) .. " undo=" .. tostring(undoTitle(app)))
-    if changed then break end
+  if clickCell(app, cell, true) then
+    changed = waitFor(function() return undoTitle(app) ~= before end, 2) and true or false
+  end
+  dbg("changed=" .. tostring(changed))
+  if changed then
+    notify("Applied “" .. choice.name .. "” (" .. tostring(undoTitle(app)) .. ").")
+  elseif before and before:find("Effect") then
+    -- The undo title was ALREADY an effect-apply, so it changing is not
+    -- available as proof — this apply may well have worked. Say so instead of
+    -- claiming failure, which would invite a re-apply and double the effect.
+    notify("Couldn’t confirm “" .. choice.name .. "”: FCP's undo already read “"
+      .. before .. "”. Check the clip before applying again.")
+  else
+    notify("“" .. choice.name .. "” didn’t apply — nothing changed.")
   end
   clearField(field)
   goTo(app, "Timeline")
-  if changed then
-    notify("Applied “" .. choice.name .. "” (" .. tostring(undoTitle(app)) .. ").")
-    return true
-  end
-  notify("“" .. choice.name .. "” didn’t apply — nothing changed.")
-  return false
+  return changed
 end
 
 -- Raw-search fallback: filter the chosen browser to the typed text and leave
@@ -634,10 +743,8 @@ end
 -- ── Palette ──────────────────────────────────────────────────────────────
 
 local chooser
-local lastShown = {}   -- choices currently displayed (drives ⌘1–9 picking)
-local cmdHeld = false
-local clickTap, keysTap, flagsTap, closeCanvas
-local chromeTimer, pickTimer   -- anchored: unreferenced hs.timer objects get GC'd before firing
+local clickTap, keysTap, closeCanvas
+local chromeTimer   -- anchored: unreferenced hs.timer objects get GC'd before firing
 
 local function applyChoice(choice)
   local app = fcp()
@@ -646,7 +753,10 @@ local function applyChoice(choice)
     return
   end
   app:activate(true)
-  sleep(0.2)
+  waitFor(function()
+    local f = hs.application.frontmostApplication()
+    return f and f:bundleID() == M.config.fcpBundle
+  end, 2)
   if choice.fallback then
     rawSearch(app, choice.fallback, choice.query)
     return
@@ -705,22 +815,6 @@ local function moveToActiveScreen()
   return true
 end
 
--- ⌘1–9 badges appended to the first nine rows, visible only while ⌘ is held.
-local function decorated(list)
-  if not cmdHeld then return list end
-  local out = {}
-  for i, c in ipairs(list) do
-    local d = {}
-    for k, v in pairs(c) do d[k] = v end
-    if i <= 9 and type(c.text) == "string" then
-      d.text = hs.styledtext.new(c.text) ..
-        hs.styledtext.new("    ⌘" .. i, { color = { white = 0.55, alpha = 0.9 } })
-    end
-    out[i] = d
-  end
-  return out
-end
-
 -- Browser thumbnails, loaded lazily for displayed rows only (≤52 at a time —
 -- never all 20k) and cached across shows. false = known-bad path.
 local imageCache = {}
@@ -739,16 +833,7 @@ local function withImages(list)
 end
 
 local function setChoices(list)
-  lastShown = withImages(list)
-  chooser:choices(decorated(lastShown))
-end
-
-local function pickRow(n)
-  local choice = lastShown[n]
-  if not choice then return end
-  chooser:hide()
-  -- run outside the eventtap callback (applies do synchronous AX work)
-  pickTimer = hs.timer.doAfter(0.05, function() applyChoice(choice) end)
+  chooser:choices(withImages(list))
 end
 
 local function showCloseButton()
@@ -772,16 +857,13 @@ end
 local function chromeDown()
   if clickTap then clickTap:stop() end
   if keysTap then keysTap:stop() end
-  if flagsTap then flagsTap:stop() end
   if closeCanvas then closeCanvas:delete() closeCanvas = nil end
-  cmdHeld = false
 end
 
 local function chromeUp()
   chromeDown()
   clickTap:start()
   keysTap:start()
-  flagsTap:start()
   moveToActiveScreen()   -- best-effort synchronous; retried below if the panel wasn't up yet
   chromeTimer = hs.timer.doAfter(0.1, function()
     if chooser:isVisible() then
@@ -876,31 +958,14 @@ function M.start()
     return false
   end)
 
-  -- ⌘W closes; ⌘1–9 applies that row. (Esc is the chooser's own close.)
+  -- ⌘W closes. (Esc is the chooser's own close; ⌘1–9 row picking is
+  -- hs.chooser's own — no need to reimplement it.)
   keysTap = hs.eventtap.new({ types.keyDown }, function(ev)
     local flags = ev:getFlags()
     if not flags.cmd or flags.alt or flags.ctrl then return false end
-    local key = hs.keycodes.map[ev:getKeyCode()]
-    if key == "w" then
+    if hs.keycodes.map[ev:getKeyCode()] == "w" then
       chooser:hide()
       return true
-    end
-    local n = tonumber(key)
-    if n and n >= 1 and n <= 9 then
-      pickRow(n)
-      return true
-    end
-    return false
-  end)
-
-  -- ⌘ held → show the ⌘1–9 badges; ⌘ released → hide them.
-  flagsTap = hs.eventtap.new({ types.flagsChanged }, function(ev)
-    local held = ev:getFlags().cmd and true or false
-    if held ~= cmdHeld then
-      cmdHeld = held
-      local row = chooser:selectedRow()
-      chooser:choices(decorated(lastShown))
-      chooser:selectedRow(row)
     end
     return false
   end)

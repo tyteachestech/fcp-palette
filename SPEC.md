@@ -43,9 +43,21 @@ Three anchors:
 
 Hard-won AX facts the design rests on:
 
-- **Browser result grids are AX-hollow**: no children, no names, no readable
-  selection. You cannot enumerate or verify items browser-side. Hence the
-  disk-scanned catalog and post-apply verification.
+- **Browser result grids ARE readable** (FCP 11): the results `AXGrid`'s
+  children are one `AXImage` per item, each with the item name as `AXTitle`
+  and a real `AXFrame`. This is what makes the palette click the *named* cell
+  instead of guessing a y-offset, and lets "FCP has no such item" be detected
+  from an empty result set. **The grid holds the previous, unfiltered contents
+  for ~250 ms after typing**, and that stale list contains the wanted name
+  too — so a match must never be read until the child count has changed and
+  then held still (`waitForCell`); reading early clicks a stale position.
+- **Writing the grid's `AXSelectedChildren` does not work**: the write is
+  accepted and reads back, and *Connect to Primary Storyline* even reads as
+  enabled, but the connect then does nothing — FCP's internal browser
+  selection is only driven by a real click. Falsified 2026-08-05.
+- **`AXEnabled` on FCP's menu items goes stale**: it can still read `true`
+  from a previous state milliseconds after a click that hasn't registered, so
+  it is a hint, never proof.
 - **The sidebar lists ARE readable**: the T&G sidebar is an `AXOutline` whose
   root rows ("Titles"/"Generators") are selected by writing `AXSelectedRows`;
   the Effects sidebar is an `AXTable` (rows enumerable by name; its
@@ -69,8 +81,8 @@ Hard-won AX facts the design rests on:
 
 | Category | Target | Mechanic |
 |---|---|---|
-| Title, Generator | Playhead, connected **above the primary storyline** (lowest free lane = topmost in the normal case) | Select sidebar root → type exact name → click first result → *Edit → Connect to Primary Storyline* |
-| Video/Audio Effect, Effect Preset | Selected clip; else the **topmost clip under the playhead** | Ensure selection via `AXSelectedChildren` write → type exact name in Effects search (scope "All Video & Audio") → double-click first result |
+| Title, Generator | Playhead, connected **above the primary storyline** (lowest free lane = topmost in the normal case) | Select sidebar root → type exact name → wait for the grid to re-filter → click the cell whose `AXTitle` matches → *Edit → Connect to Primary Storyline* |
+| Video/Audio Effect, Effect Preset | Selected clip; else the **topmost clip under the playhead** | Ensure selection via `AXSelectedChildren` write → type exact name in Effects search (scope "All Video & Audio") → double-click the matching cell |
 
 ## Verification & fail-loud rules (every apply)
 
@@ -84,12 +96,23 @@ Hard-won AX facts the design rests on:
   failure would otherwise apply the first cell of an *unfiltered* grid: the
   wrong-item failure mode.
 - **Undo-title verification**: the *Edit → Undo* menu title (read via
-  `AXMenuBar`) must change after the apply ("Undo Connect to Primary
-  Storyline", "Undo Add Video Effect"); no change → "nothing applied" notify.
-- **Effects click ladder**: the first result's y-offset depends on whether a
-  section header renders above it, so candidate offsets (45/75/105 pt) are
-  tried in order, each verified via the undo title; a miss between cells is a
-  no-op, so every rung is safe.
+  `AXMenuBar`) must become the expected one after the apply ("Undo Connect to
+  Primary Storyline", "Undo Add Video Effect").
+- **Repeat applies need a second signal.** The undo title only proves an apply
+  when it *changes*, so connecting two titles in a row leaves it identical and
+  a change-test calls a landed clip a failure — which invites a re-apply and
+  silently duplicates clips (this bit hard on 2026-08-05). The palette
+  therefore picks its verification before touching anything: if the undo title
+  *already* reads "Undo Connect to Primary Storyline", it counts the timeline
+  clips whose `AXDescription` is `Title:<name>` before and after and requires
+  the count to rise — a bounded, position-deduped scan (the AX tree reaches
+  each clip by several paths), ~5 ms, run only on a repeat. Effects have no
+  equivalent count (nothing observable changes on the clip), so a repeat there
+  is reported honestly as *couldn't confirm*, quoting the undo title it saw,
+  rather than as a failure.
+- **Exact-cell clicking**: the click lands on the center of the grid cell
+  whose `AXTitle` matches the request, so a section header rendering above the
+  results cannot shift the target (this replaced a 45/75/105 pt offset ladder).
 - **Cleanup**: search fields are cleared (clear-button `AXPress`) and focus
   returns to the timeline, so the next spacebar plays instead of typing.
 
@@ -136,6 +159,12 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 
 ## Palette UX
 
+- A title apply runs ~2.5 s hotkey-to-notification. What that budget is spent
+  on: FCP's browser filtering (~0.5 s, observed not slept through), its own
+  edit + menu latency (~1 s), and the AX round-trips around them. Waits poll at
+  30 ms because a slower poll used to add up to a second of pure overshoot
+  across the half-dozen waits in one apply, and the outcome notification fires
+  before the field-clearing cleanup rather than after it.
 - One flat list, frecency-pre-sorted (JSON usage log: count + 7-day recency
   boost), category + set as each row's subtext, and the template's own browser
   thumbnail (`small.png` inside each Motion template dir) as the row image —
@@ -158,9 +187,11 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
   Spotlight-style). Click-off uses the panel's AX frame (Hammerspoon's window
   titled "Chooser") with pid-under-point as fallback; the ✕ is an `hs.canvas`
   overlay positioned from that same frame, read fresh each show.
-- **⌘1–⌘9 quick-pick**: holding ⌘ re-renders the first nine rows with dimmed
-  ⌘*n* badges (styled-text suffix); pressing ⌘*n* applies that row. Implemented
-  with eventtaps that run only while the palette is visible.
+- **⌘1–⌘9 quick-pick** is `hs.chooser`'s own: it draws the badges on the first
+  nine rows and handles the shortcut. The badges are always visible — the
+  column is hardcoded in Hammerspoon's chooser cell, exposed through no API and
+  read-only over AX (`AXValue` on those labels is not settable), so it can only
+  be changed by replacing `hs.chooser` with a custom palette surface.
 - Hammerspoon gotcha baked in: `hs.timer.doAfter` handles must be anchored in
   module-level variables — unreferenced timers are GC'd before firing.
 - **Self-healing catalog**: the obsolete-flag filter (Catalog section) removes
@@ -175,10 +206,12 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 
 ## Known limitations (accepted for v1)
 
-- **First-result trust**: FCP's search picks the best match, and the browser
-  can't tell us which cell is which; a name that is a strict prefix of another
-  ("Ty Music In (Lowpass 🔑)" vs "… (Lowpass 2 🔑)") can apply the wrong
-  sibling. The undo verify confirms *an* apply, not *which*.
+- **Fuzzy-match fallback**: cells carry their names, so an exact title match is
+  picked whenever FCP's search returns one — the old "first result might be a
+  prefix sibling" hazard is gone for catalog names that exist verbatim. When no
+  cell matches exactly (e.g. a built-in renamed in the browser: catalog
+  "Gaussian Blur" vs browser "Gaussian"), the palette still takes FCP's best
+  match, and that pick is unverified.
 - Audio effect onto a clip with no audio is FCP-silent → surfaced as "nothing
   applied", which is correct but can't name the cause.
 - English display names assumed throughout.

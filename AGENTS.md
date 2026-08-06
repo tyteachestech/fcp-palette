@@ -13,8 +13,17 @@ Working rules:
   + stable AX identifiers only. Frames are read fresh immediately before any
   click (display topology changes mid-session are real).
 - **Every apply must stay fail-loud**: verified typing, occlusion check,
-  undo-title change. A change that can apply the *wrong* item silently is a
-  regression regardless of how much it simplifies.
+  post-apply verification. A change that can apply the *wrong* item silently is
+  a regression regardless of how much it simplifies.
+- **Never verify an apply by "the undo title changed" alone.** Two applies of
+  the same kind in a row leave it identical, so that test reports failure for
+  work that landed — and the user re-applies, duplicating clips. Connects
+  disambiguate by counting matching timeline clips; see SPEC.
+- **Testing an apply modifies the user's real project.** Every test that
+  connects or applies must delete/undo what it created and re-enumerate the
+  timeline to prove it. Verify the cleanup — a "failed" apply may in fact have
+  landed, and stacked duplicates hide behind each other at the same playhead
+  position (dedupe timeline scans by frame x *and* y).
 - Test against real catalog names (`catalog.json`), never guessed ones.
 - Debugging: `fcpPalette.config.debug = true` logs to `/tmp/fcp-palette.log`.
   The `hs` CLI reply channel can wedge while the Lua side completes — log to a
