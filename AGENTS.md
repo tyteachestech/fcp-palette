@@ -26,8 +26,11 @@ Working rules:
   position (dedupe timeline scans by frame x *and* y).
 - Test against real catalog names (`catalog.json`), never guessed ones.
 - Debugging: `fcpPalette.config.debug = true` logs to `/tmp/fcp-palette.log`.
-  The `hs` CLI reply channel can wedge while the Lua side completes — log to a
-  file and treat IPC timeouts as cosmetic.
+  The `hs` CLI reply channel wedges routinely while the Lua side completes
+  fine, and a waiting shell then hangs forever. So never block on `hs -c`
+  output: redirect it (`hs -c '…' >/dev/null 2>&1`), have the Lua write its
+  result to a file, and read that file. Clean up strays with
+  `pkill -9 -f '^hs -c'` — it kills only CLI clients, not Hammerspoon.
 - Runtime state (`catalog.json`, `catalog.lua`, `frecency.json`) stays
   git-ignored.
 - Never load the catalog with `hs.json.decode` — it freezes Hammerspoon for
