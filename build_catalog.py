@@ -6,7 +6,11 @@ Sources (all name-accurate for an English-language install):
 - Built-in templates:      FCP bundle MotionEffect.fxp Templates.localized (same layout)
 - Logic audio effects:     FCP bundle EDELPresets/Plug-In Settings/<Name>/
 - Audio Units:             `auval -s aufx` ("Vendor: Name" lines)
-- Tyler's effect presets:  ~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset
+- Saved effect presets:    ~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset
+
+Template scanning (the obsolete `<flags>` bit, `<theme>` group names, the
+unlisted "Simple" iMovie titles, the audio effect bundles) follows the approach
+proven by CommandPost's plugin scanner — see CREDITS in the README.
 """
 import html
 import json

@@ -12,13 +12,14 @@
 --     frames vs the playhead AXValueIndicator, selected by writing
 --     AXSelectedChildren — the C key does nothing when the pointer is parked).
 --     Effect applied by double-clicking the first browser result.
---   * Every apply is verified: the Edit > Undo menu title must change
---     (e.g. "Undo Add Video Effect"); otherwise the palette notifies failure.
---   * The results grids are AX-hollow (no readable items), which is why the
---     catalog comes from disk (build_catalog.py) and why verification is
---     post-apply rather than browser-side.
+--   * Every apply is verified post-apply and fails loud: connects confirm by
+--     the Edit > Undo title, or by counting matching timeline clips when the
+--     undo title can't discriminate a repeat apply.
+--   * The searchable item list comes from disk (build_catalog.py) rather than
+--     the browser, so the palette can fuzzy-match everything at once instead
+--     of driving FCP's own one-root-at-a-time search.
 -- Wire up with:
---   package.path = package.path .. ";" .. os.getenv("HOME") .. "/content/tools/fcp-palette/?.lua"
+--   package.path = package.path .. ";" .. os.getenv("HOME") .. "/path/to/fcp-palette/?.lua"
 --   fcpPalette = require("fcp_palette").start()
 
 local ax = require("hs.axuielement")
@@ -34,11 +35,16 @@ require("hs.pathwatcher")
 
 local M = {}
 
+-- The directory this file was loaded from — catalog.lua, frecency.json,
+-- missing.json and build_catalog.py all live beside it, so a clone works
+-- wherever it lands without editing paths.
+local MODULE_DIR = debug.getinfo(1, "S").source:match("^@(.*)/") or "."
+
 M.config = {
   -- ⇧Space, enabled only while FCP is frontmost (a global shift+space would
   -- fire constantly mid-typing in every other app).
   hotkey     = { { "shift" }, "space" },
-  stateDir   = os.getenv("HOME") .. "/content/tools/fcp-palette",
+  stateDir   = MODULE_DIR,
   fcpBundle  = "com.apple.FinalCut",
   maxResults = 50,
   debug      = false,  -- when true, apply flows log to /tmp/fcp-palette.log

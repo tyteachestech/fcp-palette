@@ -129,7 +129,7 @@ Disk-scanned display names (English install), deduped per category:
 | FCP bundle `Flexo …/EDELPresets/Plug-In Settings/` folder names | Logic audio effects (Channel EQ, Compressor, …) |
 | FCP bundle `Flexo …/Resources/Effect Bundles/*.audio.effectBundle` | FCP-native audio effects (Alien, Doubler, Cathedral, …), names via `FFEffectBundleLocalizable.strings` |
 | `auval -s aufx` | Apple + third-party Audio Units |
-| `~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset` | Tyler's saved effect presets |
+| `~/Library/Application Support/ProApps/Effects Presets/*.effectsPreset` | User-saved effect presets |
 
 **Obsolete-flag filter** (the disk marker behind "items that don't exist",
 learned from CommandPost's scanner): every Motion template's `<template>`
