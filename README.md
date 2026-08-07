@@ -23,8 +23,9 @@ list.
 
 ## Requirements
 
-- macOS with **Final Cut Pro 11** (English UI — the scanner reads FCP's
-  English strings tables; other languages will produce wrong names)
+- macOS with **Final Cut Pro** — developed and verified against **12.3**
+  (English UI: the scanner reads FCP's English strings tables, so other
+  languages will produce wrong names)
 - [Hammerspoon](https://www.hammerspoon.org) with **Accessibility** permission
   granted (System Settings → Privacy & Security → Accessibility)
 - Python 3 (ships with macOS; only used to build the catalog)
@@ -109,9 +110,11 @@ Titles, generators, video effects, audio effects, and effect presets are
 wired and verified. **Transitions are not** — they need nearest-edit targeting
 and a guard for the no-handles modal (Phase 2 in the spec).
 
-Verified against Final Cut Pro 11. Apple can move the accessibility tree in
-any update; when something breaks, `fcpPalette.config.debug = true` and the
-log will show which step lost the thread.
+Every mechanic is verified against **Final Cut Pro 12.3**. Nearby versions will
+probably work — nothing here depends on a version number, only on the shape of
+the accessibility tree — but they're untested. Apple can move that tree in any
+update; when something breaks, set `fcpPalette.config.debug = true` and the log
+will show which step lost the thread.
 
 ## Contributing
 

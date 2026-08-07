@@ -1,5 +1,5 @@
 -- fcp-palette — Spotlight-style command palette for Final Cut Pro.
--- Architecture (all mechanics verified against FCP 11 by AX spike, 2026-08-05):
+-- Architecture (all mechanics verified against Final Cut Pro 12.3 by AX spike, 2026-08-05):
 --   * Panels are located via menu commands + where FCP moves keyboard focus,
 --     plus stable AX identifiers — never screen positions, so any window /
 --     workspace layout works.
@@ -272,7 +272,7 @@ local function selectSidebarRoot(browser, rootName)
 end
 
 -- Wait for the browser grid to reflect the typed query, and return the cell to
--- click. Verified on FCP 11: result grids are NOT hollow — each cell is an
+-- click. Verified on FCP 12.3: result grids are NOT hollow — each cell is an
 -- AXImage whose AXTitle is the item name, with a real AXFrame. So the filter
 -- is *observed* settling (no fixed sleep), the exact-named cell is picked
 -- (rather than trusting cell 1), and its frame gives an exact click point

@@ -21,7 +21,7 @@ keystrokes/clicks drive FCP — the same control plane CommandPost uses, since
 FCP has no scripting API. The repo holds one Lua module; install is two lines
 in `~/.hammerspoon/init.lua` (see README).
 
-## How FCP is driven (all verified on FCP 11, 2026-08-05)
+## How FCP is driven (all verified on Final Cut Pro 12.3, 2026-08-05)
 
 Workspace-independence rule: **locate by structure, never by screen position.**
 Three anchors:
@@ -43,7 +43,7 @@ Three anchors:
 
 Hard-won AX facts the design rests on:
 
-- **Browser result grids ARE readable** (FCP 11): the results `AXGrid`'s
+- **Browser result grids ARE readable** (FCP 12.3): the results `AXGrid`'s
   children are one `AXImage` per item, each with the item name as `AXTitle`
   and a real `AXFrame`. This is what makes the palette click the *named* cell
   instead of guessing a y-offset, and lets "FCP has no such item" be detected
