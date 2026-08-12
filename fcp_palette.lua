@@ -312,6 +312,15 @@ local function waitForCell(grid, name, timeout)
   return pick(attr(grid, "AXChildren") or {})
 end
 
+-- How a landed item is named in the success notification. When waitForCell
+-- fell back to FCP's fuzzy best match (exact = false), the clicked cell is not
+-- guaranteed to be the catalog item, so the notification must not assert that
+-- name — it says what actually happened instead.
+local function landedName(choice, exact)
+  if exact then return "“" .. choice.name .. "”" end
+  return "FCP's best match for “" .. choice.name .. "”"
+end
+
 -- NOTE: the browser grid's AXSelectedChildren is writable and a write does
 -- register (AXSelectedChildren reads back, "Connect to Primary Storyline"
 -- reads as enabled) — but the connect then does nothing: FCP's internal
@@ -457,7 +466,7 @@ local function applyConnected(app, choice)
   -- Notify before cleanup: the cleanup (clear field, refocus timeline) is
   -- ~0.5s the user shouldn't have to wait through to learn the outcome.
   if changed then
-    notify("Connected “" .. choice.name .. "” at the playhead.")
+    notify("Connected " .. landedName(choice, exact) .. " at the playhead.")
   else
     notify("Connect didn’t register for “" .. choice.name .. "” — nothing applied.")
   end
@@ -619,7 +628,7 @@ local function applyEffect(app, choice)
   end
   dbg("changed=" .. tostring(changed))
   if changed then
-    notify("Applied “" .. choice.name .. "” (" .. tostring(undoTitle(app)) .. ").")
+    notify("Applied " .. landedName(choice, exact) .. " (" .. tostring(undoTitle(app)) .. ").")
   elseif before and before:find("Effect") then
     -- The undo title was ALREADY an effect-apply, so it changing is not
     -- available as proof — this apply may well have worked. Say so instead of

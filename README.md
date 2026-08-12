@@ -48,9 +48,8 @@ fcpPalette = require("fcp_palette").start()
 Reload Hammerspoon. The module finds its own files relative to itself, so
 clone it wherever you like — just point `package.path` at that directory.
 
-`build_catalog.py` scans your installed plugins and writes `catalog.json` +
-`catalog.lua` next to the module. It takes a few seconds and prints how many
-items it found.
+`build_catalog.py` scans your installed plugins and writes `catalog.lua` next
+to the module. It takes a few seconds and prints how many items it found.
 
 ## Use
 

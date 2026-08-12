@@ -116,13 +116,13 @@ Hard-won AX facts the design rests on:
 - **Cleanup**: search fields are cleared (clear-button `AXPress`) and focus
   returns to the timeline, so the next spacebar plays instead of typing.
 
-## Catalog (`build_catalog.py` → `catalog.json`)
+## Catalog (`build_catalog.py` → `catalog.lua`)
 
 Disk-scanned display names (English install), deduped per category:
 
 | Source | Yields |
 |---|---|
-| `~/Movies/Motion Templates.localized/{Titles,Generators,Effects,Transitions}.localized` | All third-party/user templates |
+| `~/Movies/Motion Templates.localized/{Titles,Generators,Effects}.localized` | All third-party/user templates (Transitions are not scanned — see Phase 2) |
 | `/Library/Application Support/Final Cut Pro/Templates.localized` | System-level third-party templates (CineMatch, Spherico, …) |
 | FCP bundle `MotionEffect.fxp …/{Templates,PETemplates,METemplates}.localized` | Built-in Motion templates (PE holds most stock titles/generators/transitions, e.g. "Basic Title"). The bundle's "Simple" category is skipped — unlisted iMovie titles FCP never shows |
 | FCP bundle `InternalFiltersXPC` `Localizable.strings` keys `*::Filter Name` | Built-in compiled video effects |
@@ -211,7 +211,9 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
   prefix sibling" hazard is gone for catalog names that exist verbatim. When no
   cell matches exactly (e.g. a built-in renamed in the browser: catalog
   "Gaussian Blur" vs browser "Gaussian"), the palette still takes FCP's best
-  match, and that pick is unverified.
+  match, and that pick is unverified — so the success notification downgrades
+  its wording to "Applied/Connected FCP's best match for “<name>”" rather than
+  asserting the catalog name landed.
 - Audio effect onto a clip with no audio is FCP-silent → surfaced as "nothing
   applied", which is correct but can't name the cause.
 - English display names assumed throughout.
@@ -230,5 +232,6 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
   renamed built-ins (strings-lane names like "Gaussian Blur" vs browser
   "Gaussian").
 - **Phase 2 — transitions**: nearest-edit-point targeting + the "not enough
-  extra media" modal guard (an unguarded modal hangs the AX sequence).
-  Catalog already scans them; rows stay hidden until this lands.
+  extra media" modal guard (an unguarded modal hangs the AX sequence). The scan
+  re-adds `"Transitions"` to `build_catalog.py`'s `CATEGORY_MAP` when it lands;
+  until then those rows are not built (the palette filtered them out anyway).

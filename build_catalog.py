@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build catalog.json for fcp-palette from on-disk sources.
+"""Build catalog.lua for fcp-palette from on-disk sources.
 
 Sources (all name-accurate for an English-language install):
 - User Motion templates:   ~/Movies/Motion Templates.localized/<Cat>.localized/<Set>/<Item>/
@@ -58,7 +58,7 @@ CATEGORY_MAP = {
     "Titles": "Title",
     "Generators": "Generator",
     "Effects": "Video Effect",
-    "Transitions": "Transition",
+    # "Transitions": "Transition" — re-added when Phase 2 (transition apply) lands.
 }
 
 def strip_localized(name):
@@ -280,12 +280,10 @@ def main():
                     seen.add(key)
                     items.append({"name": name, "category": "Effect Preset", "set": "My Presets"})
 
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
-    with open(out_path, "w") as fh:
-        json.dump(items, fh, ensure_ascii=False, indent=1)
-
-    # Also emit a Lua literal: hs.json.decode takes tens of seconds on a file
-    # this size (verified 2026-08-05), dofile takes milliseconds.
+    # A Lua literal is the only serialization emitted: the palette loads it with
+    # dofile in milliseconds, whereas hs.json.decode on a file this size freezes
+    # Hammerspoon for tens of seconds (verified 2026-08-05). Grep the .lua when
+    # you want to read the names.
     def lq(s):
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') \
                       .replace("\n", "\\n").replace("\r", "\\r") + '"'
@@ -301,7 +299,7 @@ def main():
     counts = {}
     for it in items:
         counts[it["category"]] = counts.get(it["category"], 0) + 1
-    print(f"{len(items)} items -> {out_path}")
+    print(f"{len(items)} items -> {lua_path}")
     for cat, n in sorted(counts.items()):
         print(f"  {cat}: {n}")
 
