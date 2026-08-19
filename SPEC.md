@@ -126,6 +126,7 @@ Disk-scanned display names (English install), deduped per category:
 | `/Library/Application Support/Final Cut Pro/Templates.localized` | System-level third-party templates (CineMatch, Spherico, …) |
 | FCP bundle `MotionEffect.fxp …/{Templates,PETemplates,METemplates}.localized` | Built-in Motion templates (PE holds most stock titles/generators/transitions, e.g. "Basic Title"). The bundle's "Simple" category is skipped — unlisted iMovie titles FCP never shows |
 | FCP bundle `InternalFiltersXPC` `Localizable.strings` keys `*::Filter Name` | Built-in compiled video effects |
+| Hardcoded `FLEXO_BUILTIN_EFFECTS` list | Browser effects compiled into Flexo itself (Draw Mask, Shape Mask, Scene Removal Mask — verified present in the 12.3 browser). Their names sit in Flexo's `FFLocalizable.strings` among hundreds of non-browser intrinsics (Transform, Crop, …) with no key pattern separating them, so they can't be scanned |
 | FCP bundle `Flexo …/EDELPresets/Plug-In Settings/` folder names | Logic audio effects (Channel EQ, Compressor, …) |
 | FCP bundle `Flexo …/Resources/Effect Bundles/*.audio.effectBundle` | FCP-native audio effects (Alien, Doubler, Cathedral, …), names via `FFEffectBundleLocalizable.strings` |
 | `auval -s aufx` | Apple + third-party Audio Units |

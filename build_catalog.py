@@ -50,6 +50,16 @@ EFFECT_BUNDLE_STRINGS = (
     "/Applications/Final Cut Pro.app/Contents/Frameworks/Flexo.framework/"
     "Resources/en.lproj/FFEffectBundleLocalizable.strings"
 )
+# Browser-visible video effects compiled into Flexo itself — in no strings
+# table the scanner reads (their names live in FFLocalizable.strings among
+# hundreds of non-browser intrinsics like Transform/Crop, with no key pattern
+# separating them). Small and stable enough to list explicitly; a rename or
+# removal fails loud at apply time and gets tombstoned like anything else.
+FLEXO_BUILTIN_EFFECTS = [
+    ("Draw Mask", "Masks"),           # FFSplineMaskEffect
+    ("Shape Mask", "Masks"),          # FFShapeMaskEffect
+    ("Scene Removal Mask", "Masks"),  # FFHeVAMLMatteEffect
+]
 # Third-party installers may also drop templates at the system level.
 SYSTEM_TEMPLATES = "/Library/Application Support/Final Cut Pro/Templates.localized"
 PRESETS = os.path.join(HOME, "Library", "Application Support", "ProApps", "Effects Presets")
@@ -249,6 +259,11 @@ def main():
         # FCP's own browser never shows.
         scan_templates(root, items, seen, skip_categories=("Simple",))
     scan_internal_filters(items, seen)
+    for name, set_name in FLEXO_BUILTIN_EFFECTS:
+        key = ("Video Effect", name.lower())
+        if key not in seen:
+            seen.add(key)
+            items.append({"name": name, "category": "Video Effect", "set": set_name})
     scan_effect_bundles(items, seen)
 
     if os.path.isdir(EDEL):
