@@ -7,7 +7,46 @@ changing anything — it records the verified AX mechanics and, critically, the
 falsified assumptions (the `C` key, browser-side verification, filesystem-only
 catalogs). Don't re-derive those.
 
-Working rules:
+## Commands
+
+There is no build system, linter, or test suite — two source files, no
+dependencies beyond Hammerspoon and macOS Python 3.
+
+```bash
+python3 build_catalog.py                          # rebuild catalog.lua (+ catalog.json record)
+hs -c 'hs.reload()' >/dev/null 2>&1               # reload Hammerspoon after editing fcp_palette.lua
+hs -c 'fcpPalette.refreshCatalog()' >/dev/null 2>&1   # force a catalog rebuild through the palette
+hs -c 'fcpPalette.apply("Video Effect", "Gaussian")' >/dev/null 2>&1   # scripted apply (real project!)
+tail -f /tmp/fcp-palette.log                      # after: hs -c 'fcpPalette.config.debug = true' …
+pkill -9 -f '^hs -c'                              # kill wedged hs CLI clients (not Hammerspoon itself)
+```
+
+"Testing" means driving the real FCP app over AX — see the working rules
+below; every applied item must be cleaned up and the cleanup verified.
+
+## Architecture
+
+Two source files, one direction of data flow:
+
+- **`build_catalog.py`** — scans installed content on disk (Motion template
+  roots, FCP bundle strings/presets, Audio Units via `auval`, saved effect
+  presets) and writes **`catalog.lua`** (git-ignored, loaded via `dofile`).
+  SPEC's "Catalog" section maps every source to what it yields.
+- **`fcp_palette.lua`** — the whole runtime: `hs.chooser` UI, fuzzy filter,
+  frecency ranking, and the AX apply pipelines. Two apply paths:
+  `applyConnected` (titles/generators → connect at playhead) and `applyEffect`
+  (effects/presets → selected or playhead clip); both go
+  focus-the-browser-search → verified-type the exact name → wait for the grid
+  to settle (`waitForCell`) → click the cell whose `AXTitle` matches →
+  post-apply verification.
+- Runtime state next to the module, all git-ignored: `catalog.lua` (the
+  index), `frecency.json` (usage ranking), `missing.json` (tombstones for
+  items a verified search couldn't find; cleared by
+  `fcpPalette.resetMissing()`).
+- Self-refresh: `hs.pathwatcher`s on the template/preset roots debounce 15 s,
+  then re-run `build_catalog.py` in the background.
+
+## Working rules
 
 - **Never locate FCP UI by screen position.** Menu commands + focused element
   + stable AX identifiers only. Frames are read fresh immediately before any
