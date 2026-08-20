@@ -84,8 +84,8 @@ M.config = {
   -- One glyph per category for the chip, so the left column is a second read
   -- of the band colour rather than 13 unrelated stamps.
   categoryGlyph = {
-    ["Title"] = "T", ["Generator"] = "G", ["Video Effect"] = "fx",
-    ["Audio Effect"] = "fx", ["Effect Preset"] = "fx", ["Transition"] = "tr",
+    ["Title"] = "T", ["Generator"] = "G", ["Video Effect"] = "FX",
+    ["Audio Effect"] = "FX", ["Effect Preset"] = "FX", ["Transition"] = "TR",
   },
   uiScale       = 0.85,  -- one reload-time control for all palette dimensions
   compactRows   = true,  -- one line per row (name + tinted category inline)
@@ -860,6 +860,20 @@ local function newArtCanvas()
   return hs.canvas.new({ x = 0, y = 0, w = ART_W, h = CANVAS_H })
 end
 
+local CHIP_GLYPH_SIZE = 30
+local function centeredArtTextFrame(text)
+  local measured = drawing.getTextDrawingSize(text, {
+    font = UI_FONT, size = CHIP_GLYPH_SIZE, lineBreak = "clip",
+  })
+  local textH = math.ceil((measured and measured.h) or CHIP_GLYPH_SIZE * 1.25)
+  return {
+    x = 0,
+    y = ART_Y + math.max(0, math.floor((ART_H - textH) / 2)),
+    w = ART_W,
+    h = textH,
+  }
+end
+
 -- Every thumbnail sits inside its category chip and is dimmed, so no single
 -- flat-white Final Cut preview out-shouts the item name next to it.
 local function roundedThumb(path, category)
@@ -890,16 +904,17 @@ local function categoryChip(category)
   local key = category or "_raw"
   if chipCache[key] then return chipCache[key] end
   local accent = tintFor(category)
+  local glyph = (category and M.config.categoryGlyph[category]) or "?"
   local cv = newArtCanvas()
   cv[1] = { type = "rectangle", action = "fill", roundedRectRadii = radii(),
             fillColor = { hex = bandFor(category), alpha = 0.9 }, frame = artFrame() }
   cv[2] = { type = "rectangle", action = "stroke", strokeWidth = 2,
             strokeColor = { hex = accent, alpha = 0.5 },
             roundedRectRadii = radii(), frame = artFrame(1) }
-  cv[3] = { type = "text", text = (category and M.config.categoryGlyph[category]) or "?",
-            textSize = 15, textAlignment = "center",
-            textColor = { hex = accent, alpha = 0.85 },
-            frame = { x = 0, y = ART_Y + 5, w = ART_W, h = ART_H } }
+  cv[3] = { type = "text", text = glyph, textFont = UI_FONT,
+            textSize = CHIP_GLYPH_SIZE, textAlignment = "center",
+            textColor = { hex = accent, alpha = 1 },
+            frame = centeredArtTextFrame(glyph) }
   local out = cv:imageFromCanvas()
   cv:delete()
   chipCache[key] = out
@@ -1097,14 +1112,22 @@ local function refreshRowCanvas()
   local tableEl = win and findFirst(win, function(e)
     return attr(e, "AXRole") == "AXTable"
   end, 5, 120)
+  local scrollEl = win and findFirst(win, function(e)
+    return attr(e, "AXRole") == "AXScrollArea"
+  end, 5, 120)
   local rows = tableEl and (attr(tableEl, "AXRows") or attr(tableEl, "AXChildren")) or {}
-  if not fr or #rows == 0 then return end
+  local viewport = scrollEl and attr(scrollEl, "AXFrame")
+  if not fr or not viewport or #rows == 0 then return end
 
-  local visible, sig = {}, {}
+  local viewportTop = math.max(fr.y, viewport.y)
+  local viewportBottom = math.min(fr.y + fr.h, viewport.y + viewport.h)
+
+  local visible = {}
+  local sig = { string.format("viewport:%d:%d", viewportTop, viewportBottom) }
   for i, row in ipairs(rows) do
     local rf = attr(row, "AXFrame")
     local c = currentChoices[i]
-    if rf and c and rf.y + rf.h > fr.y and rf.y < fr.y + fr.h then
+    if rf and c and rf.y + rf.h > viewportTop and rf.y < viewportBottom then
       local selected = attr(row, "AXSelected") == true
       visible[#visible + 1] = { frame = rf, choice = c, selected = selected }
       sig[#sig + 1] = string.format("%d:%d:%d:%s:%s", i, rf.y, rf.h,
@@ -1117,7 +1140,10 @@ local function refreshRowCanvas()
   if rowCanvas then rowCanvas:delete() end
   rowCanvas = hs.canvas.new(fr)
 
-  local n = 0
+  local n = 1
+  rowCanvas[n] = { type = "rectangle", action = "clip",
+    frame = { x = 0, y = viewportTop - fr.y,
+              w = fr.w, h = math.max(viewportBottom - viewportTop, 1) } }
   for _, v in ipairs(visible) do
     local rf, c = v.frame, v.choice
     local rowX = math.floor(rf.x - fr.x)
@@ -1170,6 +1196,8 @@ local function refreshRowCanvas()
       frame = centeredTextFrame(metaX, textRight - metaX,
                                 y, h, META_FONT_SIZE) }
   end
+  n = n + 1
+  rowCanvas[n] = { type = "resetClip" }
   rowCanvas:level(hs.canvas.windowLevels.popUpMenu)
   rowCanvas:clickActivating(false)
   rowCanvas:canvasMouseEvents(false, false)

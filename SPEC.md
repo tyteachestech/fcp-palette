@@ -232,6 +232,11 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   also overlaps adjacent rows by 1pt, removing the chooser's gray padding seam.
   The native styled text is transparent but remains present to preserve the
   chooser's row sizing and accessibility structure.
+- **Scrolling is clipped to the real viewport.** The AX table frame describes
+  the full scrollable content and can extend far above the chooser window. The
+  canvas therefore clips every row element to the live `AXScrollArea` frame;
+  rows may scroll underneath the search field natively, but their custom wash,
+  thumbnail, text, and selection treatment can never paint over it.
 - **Band height and row height are coupled.** Row height still comes from the
   transparent styled text's line height plus chooser padding. `rowBandHeight`
   therefore remains the row-density control. `visibleRows` is 9, making the
@@ -263,6 +268,10 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   overlay offsets its frame upward by the measured 8pt center delta. This
   centers the visible thumbnail pixels in the row rather than centering the
   padded image canvas.
+- **Missing thumbnails use a designed badge.** Items without an official Final
+  Cut preview use the same rounded category chip, but its category glyph is a
+  measured, optically centered 30pt source mark (`T`, `G`, `FX`, or `TR`) rather
+  than the former 15pt text with a hand-tuned y offset.
 - **No API exists for**: the panel's corner radius, native selection plate, or
   the ⌘1–9 glyphs. The custom selection treatment therefore follows the AX row
   state instead of trying to restyle the chooser's plate directly.
