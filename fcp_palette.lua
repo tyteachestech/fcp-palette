@@ -1106,7 +1106,7 @@ local function refreshRowCanvas()
     n = n + 1
     rowCanvas[n] = { type = "rectangle", action = "fill",
       fillColor = { hex = bandFor(c.category), alpha = M.config.rowTintAlpha },
-      frame = { x = rowX, y = y, w = rowW, h = h } }
+      frame = { x = 0, y = y, w = fr.w, h = h } }
 
     local thumbX = rowX + ROW_EDGE_INSET
     if c.rowArt then

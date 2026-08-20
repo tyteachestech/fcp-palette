@@ -217,10 +217,12 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   it makes them shorter — 8 rows measured 537pt with subText and 430pt
   without. That is what makes single-line (`compactRows`) rows worth having:
   they buy real density, not just a different arrangement of the same text.
-- **There is no per-row background API.** The canvas therefore fills each AX
-  row frame and overlaps adjacent frames by 1pt, removing the chooser's gray
-  padding seam. The native styled text is transparent but remains present to
-  preserve the chooser's row sizing and accessibility structure.
+- **There is no per-row background API.** The canvas therefore uses each AX
+  row's vertical frame but extends its wash across the full chooser width, so
+  the side margins receive exactly the same tint and opacity as the middle. It
+  also overlaps adjacent rows by 1pt, removing the chooser's gray padding seam.
+  The native styled text is transparent but remains present to preserve the
+  chooser's row sizing and accessibility structure.
 - **Band height and row height are coupled.** Row height still comes from the
   transparent styled text's line height plus chooser padding. `rowBandHeight`
   therefore remains the row-density control. `visibleRows` is 9, making the
