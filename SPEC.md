@@ -228,12 +228,15 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   therefore remains the row-density control. `visibleRows` is 9, making the
   panel roughly 30% taller than the former 7-row layout and showing two more
   complete results.
-- **Keep the band translucent.** `hs.chooser` draws its own selection plate
-  *under* the row text; at low `rowTintAlpha` the plate still reads through an
-  opaque-looking band. At high alpha the cursor disappears — and the cursor is
-  the one signal a Return-to-commit tool cannot afford to lose. Category bands
-  are therefore held near-equal in weight (~15-18 ΔE from the panel) and
-  separated by hue, never by making one category louder.
+- **Selection must be obvious before the first keypress.** Each AX row's
+  `AXSelected` state participates in the canvas signature, so an arrow-key or
+  mouse selection immediately rebuilds the overlay. The active result gets a
+  restrained white lift plus a 3pt full-width white outline. The category wash
+  stays translucent beneath it, preserving both category hue and the chooser's
+  native selection plate.
+- **Keep the category band translucent.** Category bands are held near-equal in
+  weight (~15-18 ΔE from the panel) and separated by hue, never by making one
+  category louder.
 - **Column position scales with the type.** `metaTabStop` is also the canvas
   metadata x-position, doubled from the original value with the font sizes.
 - **Text is optically centered from measured line boxes.** Each canvas text
@@ -245,9 +248,9 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   shortcut column keeps a reserved 76pt at the right.
 - **The fixed image well cannot display a 2x thumbnail.** The chooser keeps a
   small native image as a fail-safe; the canvas draws the visible 88x60pt art.
-- **No API exists for**: the panel's corner radius, selection plate, or the
-  ⌘1–9 glyphs. The category wash stays translucent so the native selection
-  plate remains visible through the canvas.
+- **No API exists for**: the panel's corner radius, native selection plate, or
+  the ⌘1–9 glyphs. The custom selection treatment therefore follows the AX row
+  state instead of trying to restyle the chooser's plate directly.
 - Gotcha: `pairs()` over `hs.styledtext.defaultFonts`, and `tostring()` on an
   `hs.styledtext` object, both blow the Lua stack. Address the keys directly.
 

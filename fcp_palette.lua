@@ -93,6 +93,8 @@ M.config = {
   metaFontSize  = 22,    -- deliberately 2x the original 11pt metadata
   rowTintAlpha  = 0.32,  -- band opacity; keep it translucent or hs.chooser's own
                          -- selection highlight stops showing through the band
+  selectionTintAlpha = 0.14, -- extra white lift on the active result
+  selectionStrokeWidth = 3,  -- full-width outline makes focus obvious at rest
   metaTabStop   = 380,   -- scales with the 2x type so the columns do not collide
   showThumbnails = true, -- false = the category glyph everywhere, no Final Cut
                          -- previews
@@ -1085,9 +1087,10 @@ local function refreshRowCanvas()
     local rf = attr(row, "AXFrame")
     local c = currentChoices[i]
     if rf and c and rf.y + rf.h > fr.y and rf.y < fr.y + fr.h then
-      visible[#visible + 1] = { frame = rf, choice = c }
-      sig[#sig + 1] = string.format("%d:%d:%d:%s", i, rf.y, rf.h,
-        c.id or c.displayName or "")
+      local selected = attr(row, "AXSelected") == true
+      visible[#visible + 1] = { frame = rf, choice = c, selected = selected }
+      sig[#sig + 1] = string.format("%d:%d:%d:%s:%s", i, rf.y, rf.h,
+        c.id or c.displayName or "", tostring(selected))
     end
   end
   local signature = table.concat(sig, "|")
@@ -1107,6 +1110,18 @@ local function refreshRowCanvas()
     rowCanvas[n] = { type = "rectangle", action = "fill",
       fillColor = { hex = bandFor(c.category), alpha = M.config.rowTintAlpha },
       frame = { x = 0, y = y, w = fr.w, h = h } }
+
+    if v.selected then
+      n = n + 1
+      rowCanvas[n] = { type = "rectangle", action = "fill",
+        fillColor = { white = 1, alpha = M.config.selectionTintAlpha },
+        frame = { x = 0, y = y, w = fr.w, h = h } }
+      n = n + 1
+      rowCanvas[n] = { type = "rectangle", action = "stroke",
+        strokeColor = { white = 1, alpha = 0.92 },
+        strokeWidth = M.config.selectionStrokeWidth,
+        frame = { x = 2, y = y + 2, w = fr.w - 4, h = math.max(h - 4, 1) } }
+    end
 
     local thumbX = rowX + ROW_EDGE_INSET
     if c.rowArt then
