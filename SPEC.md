@@ -248,6 +248,10 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   shortcut column keeps a reserved 76pt at the right.
 - **The fixed image well cannot display a 2x thumbnail.** The chooser keeps a
   small native image as a fail-safe; the canvas draws the visible 88x60pt art.
+  That source image retains transparent top padding for the native well, so the
+  overlay offsets its frame upward by the measured 8pt center delta. This
+  centers the visible thumbnail pixels in the row rather than centering the
+  padded image canvas.
 - **No API exists for**: the panel's corner radius, native selection plate, or
   the ⌘1–9 glyphs. The custom selection treatment therefore follows the AX row
   state instead of trying to restyle the chooser's plate directly.

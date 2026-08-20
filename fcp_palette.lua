@@ -827,6 +827,12 @@ local ART_W, ART_H   = 128, 60          -- deliberately 2x the original row art
 local CANVAS_H       = 88               -- the well; the rest is transparent
 local ART_Y          = 26               -- biased low: the well centres on the
                                         -- ROW, but the band sits below centre
+-- rowCanvas displays that padded image directly. Offset its frame by the
+-- visible art's center delta so the pixels, not the transparent canvas, are
+-- vertically centered in the row.
+local THUMB_Y_CORRECTION = -math.floor(
+  ((ART_Y + ART_H / 2) - CANVAS_H / 2) * THUMB_H / CANVAS_H + 0.5
+)
 local roundedCache, chipCache = {}, {}
 
 local function radii()
@@ -1127,7 +1133,8 @@ local function refreshRowCanvas()
     if c.rowArt then
       n = n + 1
       rowCanvas[n] = { type = "image", image = c.rowArt, imageScaling = "scaleToFit",
-        frame = { x = thumbX, y = y + (h - THUMB_H) / 2,
+        frame = { x = thumbX,
+                  y = y + (h - THUMB_H) / 2 + THUMB_Y_CORRECTION,
                   w = THUMB_W, h = THUMB_H } }
     end
 
