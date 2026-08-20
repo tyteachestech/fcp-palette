@@ -26,7 +26,7 @@ local ax = require("hs.axuielement")
 -- Preload every extension used inside callbacks: loading one lazily mid-flow
 -- (e.g. hs.json on the first frecency/tombstone write) errors out of the
 -- callback with only an "hs.ipc … recursing" storm as evidence.
-require("hs.json")
+local json = require("hs.json")
 require("hs.fs")
 require("hs.image")
 require("hs.canvas")
@@ -88,16 +88,18 @@ M.config = {
   },
   compactRows   = true,  -- one line per row (name + tinted category inline)
   cornerRadius  = 5,     -- rounds the thumbnails and the no-thumb colour chips
+  nameFontSize  = 26,    -- deliberately 2x the original 13pt row label
+  metaFontSize  = 22,    -- deliberately 2x the original 11pt metadata
   rowTintAlpha  = 0.32,  -- band opacity; keep it translucent or hs.chooser's own
                          -- selection highlight stops showing through the band
-  metaTabStop   = 190,   -- pt: the second column's left edge, so it is a column.
-                         -- 230 left a ~120pt desert after short names; 190 keeps
-                         -- ~130pt of name room, more than the longest seen so far
+  metaTabStop   = 380,   -- scales with the 2x type so the columns do not collide
   showThumbnails = true, -- false = the category glyph everywhere, no Final Cut
-                         -- previews (they carry little at ~12pt tall)
-  rowBandHeight = 24,    -- band and row height are coupled: hs.chooser pads the
+                         -- previews
+  rowBandHeight = 48,    -- scales with the 2x type; hs.chooser pads the
                          -- line box by a fixed amount, so a taller band just makes a
-                         -- taller row. 24 keeps rows compact and the band centred.
+                         -- taller row.
+  paletteWidth  = 1180,  -- room for the enlarged name and metadata columns
+  visibleRows   = 7,     -- keeps the overall panel near its former screen height
 }
 
 local function dbg(s)
@@ -137,14 +139,14 @@ local CATEGORIES = {
 local function readJSON(path)
   local f = io.open(path, "r")
   if not f then return nil end
-  local ok, data = pcall(hs.json.decode, f:read("*a"))
+  local ok, data = pcall(json.decode, f:read("*a"))
   f:close()
   return ok and data or nil
 end
 
 local function writeJSON(path, data)
   local f = io.open(path, "w")
-  if f then f:write(hs.json.encode(data)) f:close() end
+  if f then f:write(json.encode(data)) f:close() end
 end
 
 local function notify(msg)
@@ -730,10 +732,9 @@ end
 
 -- ── Row look ─────────────────────────────────────────────────────────────
 -- hs.chooser accepts an hs.styledtext for `text`/`subText` and an hs.image for
--- `image`, which is the whole budget for styling a row. There is no per-row
--- background API and no panel corner-radius API, so: the row wash is a
--- styledtext `backgroundColor` stretched by trailing padding, and every
--- rounded corner in sight is drawn by us inside the image well.
+-- `image`. It still owns row sizing, accessibility, selection and input; the
+-- visible 2x art, text and full-height wash are painted by `rowCanvas` over the
+-- live AX row frames because the native image well and row padding are fixed.
 -- Two measured facts this section is built on (2026-08-20):
 --   * Row height is NOT fixed — dropping `subText` shrinks it (8 rows: 537pt
 --     with subText vs 430pt without), which is what buys compactRows.
@@ -741,8 +742,11 @@ end
 --     can't remove, so a fuller band always costs results per screen.
 
 local UI_FONT    = ".AppleSystemUIFont"
-local NAME_COLOR = { hex = "#F4F4F2" }
-local META_COLOR = { hex = "#FFFFFF", alpha = 0.45 }
+-- The chooser still owns row geometry, selection, scrolling and the native
+-- ⌘1–9 badges. Its text is transparent because `rowCanvas` draws the visible
+-- 2x type, thumbnails and edge-to-edge colour without replacing that behavior.
+local NAME_COLOR = { hex = "#F4F4F2", alpha = 0 }
+local META_COLOR = { hex = "#FFFFFF", alpha = 0 }
 local NEUTRAL    = "#9AA4B2"
 
 local function tintFor(category)
@@ -773,7 +777,7 @@ local function clip(name)
 end
 
 local function styledRow(name, category, set)
-  local band = { hex = bandFor(category), alpha = M.config.rowTintAlpha }
+  local band = { white = 0, alpha = 0 }
   local para = { minimumLineHeight = M.config.rowBandHeight,
                  maximumLineHeight = M.config.rowBandHeight,
                  tabStops = { { location = M.config.metaTabStop, tabStopType = "left" } } }
@@ -782,11 +786,11 @@ local function styledRow(name, category, set)
                                     color = color, backgroundColor = band,
                                     paragraphStyle = para })
   end
-  local nameRun = run(clip(name), 13, NAME_COLOR)
-  local metaRun = run("\t" .. metaFor(category, set), 11, META_COLOR)
+  local nameRun = run(clip(name), M.config.nameFontSize, NAME_COLOR)
+  local metaRun = run("\t" .. metaFor(category, set), M.config.metaFontSize, META_COLOR)
   -- The padding is what stretches the wash to the panel edge; overshoot it so
   -- every row's band is clipped at the same x rather than ending on its text.
-  local padRun  = run(string.rep(" ", 900), 13, NAME_COLOR)
+  local padRun  = run(string.rep(" ", 900), M.config.nameFontSize, NAME_COLOR)
   if M.config.compactRows then
     return nameRun .. metaRun .. padRun, nil
   end
@@ -798,9 +802,9 @@ end
 -- The art is drawn into a canvas TALLER than the art itself: hs.chooser scales
 -- the whole canvas into its well, so the transparent margin is how the visible
 -- chip is kept down to band height instead of punching through the band.
-local ART_W, ART_H   = 64, 30           -- the visible chip, 16:9-ish
-local CANVAS_H       = 44               -- the well; the rest is transparent
-local ART_Y          = 13               -- biased low: the well centres on the
+local ART_W, ART_H   = 128, 60          -- deliberately 2x the original row art
+local CANVAS_H       = 88               -- the well; the rest is transparent
+local ART_Y          = 26               -- biased low: the well centres on the
                                         -- ROW, but the band sits below centre
 local roundedCache, chipCache = {}, {}
 
@@ -895,6 +899,8 @@ local function loadChoices()
         name = item.name,
         category = item.category,
         thumb = item.thumb,
+        displayName = clip(item.name),
+        displayMeta = metaFor(item.category, item.set),
         _hay = (item.name .. " " .. item.category):lower(),
         _score = frecencyScore(log[id], now),
       }
@@ -936,7 +942,8 @@ local function filteredChoices(query)
     for _, fb in ipairs({ { "Search Titles & Generators for “" .. query .. "”", "sidebar" },
                           { "Search Effects for “" .. query .. "”", "effects" } }) do
       local text, subText = styledRow(fb[1], nil, nil)
-      out[#out + 1] = { text = text, subText = subText, fallback = fb[2], query = query }
+      out[#out + 1] = { text = text, subText = subText, fallback = fb[2], query = query,
+                        displayName = clip(fb[1]), displayMeta = metaFor(nil, nil) }
     end
   end
   return out
@@ -945,8 +952,10 @@ end
 -- ── Palette ──────────────────────────────────────────────────────────────
 
 local chooser
-local clickTap, keysTap, closeCanvas
-local chromeTimer   -- anchored: unreferenced hs.timer objects get GC'd before firing
+local clickTap, keysTap, closeCanvas, rowCanvas
+local currentChoices = {}
+local rowCanvasTimer
+local rowCanvasSignature
 
 local function applyChoice(choice)
   local app = fcp()
@@ -1021,16 +1030,92 @@ end
 -- never all 20k) and cached across shows. false = known-bad path.
 local function withImages(list)
   for _, c in ipairs(list) do
-    if not c.image then
-      c.image = (M.config.showThumbnails and c.thumb
-                 and roundedThumb(c.thumb, c.category)) or categoryChip(c.category)
+    if not c.rowArt then
+      c.rowArt = (M.config.showThumbnails and c.thumb
+                  and roundedThumb(c.thumb, c.category)) or categoryChip(c.category)
     end
+    -- Keep the chooser's small image as a fail-safe; the row canvas covers it
+    -- with the 2x rendering during normal operation.
+    c.image = c.rowArt
   end
   return list
 end
 
 local function setChoices(list)
-  chooser:choices(withImages(list))
+  currentChoices = withImages(list)
+  chooser:choices(currentChoices)
+  rowCanvasSignature = nil
+end
+
+-- hs.chooser caps its image well and cannot colour row padding. This visual
+-- layer uses the chooser's live AX row frames, so the proven input, selection,
+-- scrolling and apply mechanics remain untouched while the visible rows get
+-- full-height bands, genuinely larger art and 2x type.
+local function refreshRowCanvas()
+  if not chooser:isVisible() then return end
+  local fr = chooserAXFrame()
+  local win = chooserAXWindow()
+  local tableEl = win and findFirst(win, function(e)
+    return attr(e, "AXRole") == "AXTable"
+  end, 5, 120)
+  local rows = tableEl and (attr(tableEl, "AXRows") or attr(tableEl, "AXChildren")) or {}
+  if not fr or #rows == 0 then return end
+
+  local visible, sig = {}, {}
+  for i, row in ipairs(rows) do
+    local rf = attr(row, "AXFrame")
+    local c = currentChoices[i]
+    if rf and c and rf.y + rf.h > fr.y and rf.y < fr.y + fr.h then
+      visible[#visible + 1] = { frame = rf, choice = c }
+      sig[#sig + 1] = string.format("%d:%d:%d:%s", i, rf.y, rf.h,
+        c.id or c.displayName or "")
+    end
+  end
+  local signature = table.concat(sig, "|")
+  if signature == rowCanvasSignature then return end
+  rowCanvasSignature = signature
+  if rowCanvas then rowCanvas:delete() end
+  rowCanvas = hs.canvas.new(fr)
+
+  local n = 0
+  for _, v in ipairs(visible) do
+    local rf, c = v.frame, v.choice
+    local y = math.floor(rf.y - fr.y)
+    local h = math.ceil(rf.h) + 1 -- 1pt overlap prevents a hairline at row joins
+    n = n + 1
+    rowCanvas[n] = { type = "rectangle", action = "fill",
+      fillColor = { hex = bandFor(c.category), alpha = M.config.rowTintAlpha },
+      frame = { x = math.floor(rf.x - fr.x), y = y,
+                w = math.ceil(rf.w), h = h } }
+
+    local artW, artH = 88, 60
+    if c.rowArt then
+      n = n + 1
+      rowCanvas[n] = { type = "image", image = c.rowArt, imageScaling = "scaleToFit",
+        frame = { x = 12, y = y + (h - artH) / 2, w = artW, h = artH } }
+    end
+
+    local textY = y + math.max(0, (h - M.config.rowBandHeight) / 2)
+    n = n + 1
+    rowCanvas[n] = { type = "text", text = c.displayName or "",
+      textFont = UI_FONT, textSize = M.config.nameFontSize,
+      textLineBreak = "truncateTail",
+      textColor = NAME_COLOR.alpha == 0 and { hex = "#F4F4F2" } or NAME_COLOR,
+      frame = { x = 104, y = textY + 7,
+                w = M.config.metaTabStop - 112, h = M.config.rowBandHeight } }
+    n = n + 1
+    rowCanvas[n] = { type = "text", text = c.displayMeta or "",
+      textFont = UI_FONT, textSize = M.config.metaFontSize,
+      textLineBreak = "truncateTail",
+      textColor = { hex = "#FFFFFF", alpha = 0.45 },
+      frame = { x = M.config.metaTabStop + 16, y = textY + 9,
+                w = math.max(80, fr.w - M.config.metaTabStop - 96),
+                h = M.config.rowBandHeight } }
+  end
+  rowCanvas:level(hs.canvas.windowLevels.popUpMenu)
+  rowCanvas:clickActivating(false)
+  rowCanvas:canvasMouseEvents(false, false)
+  rowCanvas:show()
 end
 
 local function showCloseButton()
@@ -1055,19 +1140,19 @@ local function chromeDown()
   if clickTap then clickTap:stop() end
   if keysTap then keysTap:stop() end
   if closeCanvas then closeCanvas:delete() closeCanvas = nil end
+  if rowCanvasTimer then rowCanvasTimer:stop() rowCanvasTimer = nil end
+  if rowCanvas then rowCanvas:delete() rowCanvas = nil end
+  rowCanvasSignature = nil
 end
 
 local function chromeUp()
   chromeDown()
   clickTap:start()
   keysTap:start()
-  moveToActiveScreen()   -- best-effort synchronous; retried below if the panel wasn't up yet
-  chromeTimer = hs.timer.doAfter(0.1, function()
-    if chooser:isVisible() then
-      moveToActiveScreen()
-      showCloseButton()   -- positions off the frame read AFTER the move
-    end
-  end)
+  moveToActiveScreen()
+  refreshRowCanvas()
+  rowCanvasTimer = hs.timer.doEvery(0.12, refreshRowCanvas)
+  showCloseButton()
 end
 
 local function showPalette()
@@ -1078,9 +1163,9 @@ local function showPalette()
   loadChoices()
   chooser:query("")
   setChoices(filteredChoices(""))
-  -- chooser:width() is a percentage of the PRIMARY screen; convert so the
-  -- panel is ~680px (Spotlight-ish) on whichever screen it will land on.
-  local wpx = math.min(680, targetScreen():frame().w * 0.85)
+  -- chooser:width() is a percentage of the PRIMARY screen; convert the
+  -- requested point width for whichever screen the panel will land on.
+  local wpx = math.min(M.config.paletteWidth, targetScreen():frame().w * 0.85)
   chooser:width(wpx / hs.screen.primaryScreen():frame().w * 100)
   chooser:show()
 end
@@ -1132,7 +1217,7 @@ function M.start()
     if choice then applyChoice(choice) end
   end)
   chooser:queryChangedCallback(function(q) setChoices(filteredChoices(q)) end)
-  chooser:rows(13)   -- whole rows only; the default slices the last one
+  chooser:rows(M.config.visibleRows) -- whole rows only; sized for the 2x row type
   chooser:placeholderText("Titles, generators, effects…")
   chooser:showCallback(chromeUp)
   chooser:hideCallback(chromeDown)
