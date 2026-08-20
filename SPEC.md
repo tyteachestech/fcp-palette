@@ -213,6 +213,15 @@ mouse/keyboard handling, and native ⌘1–9 badges. A mouse-transparent
 row backgrounds, thumbnails, and text. This keeps the proven chooser behavior
 while escaping two fixed-cell visual limits. Measured, not assumed:
 
+- **One shared geometric scale.** `M.config.uiScale` is the reload-time control
+  for the palette's fonts, line height, thumbnails, horizontal spacing, column
+  positions, window width, selection outline, and close control. The baseline
+  dimensions stay readable in config and are resolved through one rounding
+  helper. At the current `0.85`, the primary type resolves from 26pt to 22pt
+  and metadata from 22pt to 19pt. `visibleRows` remains a count, not a size.
+  Native chooser padding and search-field chrome are owned by macOS and cannot
+  be scaled by this layer.
+
 - **Row height is not fixed.** Supplying `subText` makes rows taller; omitting
   it makes them shorter — 8 rows measured 537pt with subText and 430pt
   without. That is what makes single-line (`compactRows`) rows worth having:
@@ -237,17 +246,19 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
 - **Keep the category band translucent.** Category bands are held near-equal in
   weight (~15-18 ΔE from the panel) and separated by hue, never by making one
   category louder.
-- **Column position scales with the type.** `metaTabStop` is also the canvas
-  metadata x-position, doubled from the original value with the font sizes.
+- **Column position scales with the type.** The baseline `metaTabStop` is also
+  the canvas metadata x-position, and resolves through `uiScale` with the font.
 - **Text is optically centered from measured line boxes.** Each canvas text
   frame uses `hs.drawing.getTextDrawingSize` for its actual font size, then
   centers that height inside the live AX row frame. Name and metadata no longer
   depend on separate hand-tuned y offsets.
-- **Horizontal spacing is explicit.** The row edge to thumbnail and thumbnail
-  to name gaps are both 16pt; the name-to-metadata gap is 24pt, and the native
-  shortcut column keeps a reserved 76pt at the right.
+- **Horizontal spacing is explicit and proportional.** At 1.0 scale, the row
+  edge to thumbnail and thumbnail to name gaps are both 16pt; the
+  name-to-metadata gap is 24pt, and the native shortcut column reserves 76pt.
+  All four resolve through `uiScale`.
 - **The fixed image well cannot display a 2x thumbnail.** The chooser keeps a
-  small native image as a fail-safe; the canvas draws the visible 88x60pt art.
+  small native image as a fail-safe; the canvas draws from an 88x60pt baseline
+  that resolves through `uiScale`.
   That source image retains transparent top padding for the native well, so the
   overlay offsets its frame upward by the measured 8pt center delta. This
   centers the visible thumbnail pixels in the row rather than centering the

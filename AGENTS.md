@@ -64,7 +64,7 @@ Two source files, one direction of data flow:
   landed, and stacked duplicates hide behind each other at the same playhead
   position (dedupe timeline scans by frame x *and* y).
 - Test against real catalog names (`catalog.lua`), never guessed ones.
-- Row styling lives in `M.config` (`categoryBand`, `categoryColor`,
+- Row styling lives in `M.config` (`uiScale`, `categoryBand`, `categoryColor`,
   `categoryGlyph`, `rowTintAlpha`, `rowBandHeight`, `nameFontSize`,
   `metaFontSize`, `metaTabStop`, `paletteWidth`, `visibleRows`, `compactRows`,
   `showThumbnails`) and the mouse-transparent `rowCanvas` layer. Read SPEC's

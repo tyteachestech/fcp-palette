@@ -87,12 +87,14 @@ M.config = {
     ["Title"] = "T", ["Generator"] = "G", ["Video Effect"] = "fx",
     ["Audio Effect"] = "fx", ["Effect Preset"] = "fx", ["Transition"] = "tr",
   },
+  uiScale       = 0.85,  -- one reload-time control for all palette dimensions
   compactRows   = true,  -- one line per row (name + tinted category inline)
+  -- The dimensions below are the 1.0-scale baselines. Change only uiScale for
+  -- a proportional resize; individual values remain available as exceptions.
   cornerRadius  = 5,     -- rounds the thumbnails and the no-thumb colour chips
-  nameFontSize  = 26,    -- deliberately 2x the original 13pt row label
-  metaFontSize  = 22,    -- deliberately 2x the original 11pt metadata
-  rowTintAlpha  = 0.32,  -- band opacity; keep it translucent or hs.chooser's own
-                         -- selection highlight stops showing through the band
+  nameFontSize  = 26,    -- 22pt at the current 0.85 scale
+  metaFontSize  = 22,    -- 19pt at the current 0.85 scale
+  rowTintAlpha  = 0.32,  -- category wash opacity; unaffected by geometric scale
   selectionTintAlpha = 0.14, -- extra white lift on the active result
   selectionStrokeWidth = 3,  -- full-width outline makes focus obvious at rest
   metaTabStop   = 380,   -- scales with the 2x type so the columns do not collide
@@ -104,6 +106,10 @@ M.config = {
   paletteWidth  = 1180,  -- room for the enlarged name and metadata columns
   visibleRows   = 9,     -- two more whole rows; closest clean fit to 30% taller
 }
+
+local function ui(value)
+  return math.max(1, math.floor(value * M.config.uiScale + 0.5))
+end
 
 local function dbg(s)
   if not M.config.debug then return end
@@ -744,12 +750,18 @@ end
 --   * Row height = band height + ~12pt of padding hs.chooser adds and we
 --     can't remove, so a fuller band always costs results per screen.
 
-local UI_FONT    = ".AppleSystemUIFont"
-local ROW_EDGE_INSET = 16
-local THUMB_W, THUMB_H = 88, 60
-local THUMB_TEXT_GAP = 16
-local COLUMN_GAP = 24
-local SHORTCUT_INSET = 76
+local UI_FONT = ".AppleSystemUIFont"
+local ROW_EDGE_INSET = ui(16)
+local THUMB_W, THUMB_H = ui(88), ui(60)
+local THUMB_TEXT_GAP = ui(16)
+local COLUMN_GAP = ui(24)
+local SHORTCUT_INSET = ui(76)
+local NAME_FONT_SIZE = ui(M.config.nameFontSize)
+local META_FONT_SIZE = ui(M.config.metaFontSize)
+local ROW_BAND_HEIGHT = ui(M.config.rowBandHeight)
+local META_TAB_STOP = ui(M.config.metaTabStop)
+local SELECTION_STROKE_WIDTH = ui(M.config.selectionStrokeWidth)
+local SELECTION_INSET = ui(2)
 -- The chooser still owns row geometry, selection, scrolling and the native
 -- ⌘1–9 badges. Its text is transparent because `rowCanvas` draws the visible
 -- 2x type, thumbnails and edge-to-edge colour without replacing that behavior.
@@ -786,19 +798,19 @@ end
 
 local function styledRow(name, category, set)
   local band = { white = 0, alpha = 0 }
-  local para = { minimumLineHeight = M.config.rowBandHeight,
-                 maximumLineHeight = M.config.rowBandHeight,
-                 tabStops = { { location = M.config.metaTabStop, tabStopType = "left" } } }
+  local para = { minimumLineHeight = ROW_BAND_HEIGHT,
+                 maximumLineHeight = ROW_BAND_HEIGHT,
+                 tabStops = { { location = META_TAB_STOP, tabStopType = "left" } } }
   local function run(str, size, color)
     return hs.styledtext.new(str, { font = { name = UI_FONT, size = size },
                                     color = color, backgroundColor = band,
                                     paragraphStyle = para })
   end
-  local nameRun = run(clip(name), M.config.nameFontSize, NAME_COLOR)
-  local metaRun = run("\t" .. metaFor(category, set), M.config.metaFontSize, META_COLOR)
+  local nameRun = run(clip(name), NAME_FONT_SIZE, NAME_COLOR)
+  local metaRun = run("\t" .. metaFor(category, set), META_FONT_SIZE, META_COLOR)
   -- Keep the native line wide enough to preserve the chooser's measured row
   -- geometry; the visible wash itself is painted by rowCanvas.
-  local padRun  = run(string.rep(" ", 900), M.config.nameFontSize, NAME_COLOR)
+  local padRun  = run(string.rep(" ", 900), NAME_FONT_SIZE, NAME_COLOR)
   if M.config.compactRows then
     return nameRun .. metaRun .. padRun, nil
   end
@@ -1125,8 +1137,10 @@ local function refreshRowCanvas()
       n = n + 1
       rowCanvas[n] = { type = "rectangle", action = "stroke",
         strokeColor = { white = 1, alpha = 0.92 },
-        strokeWidth = M.config.selectionStrokeWidth,
-        frame = { x = 2, y = y + 2, w = fr.w - 4, h = math.max(h - 4, 1) } }
+        strokeWidth = SELECTION_STROKE_WIDTH,
+        frame = { x = SELECTION_INSET, y = y + SELECTION_INSET,
+                  w = fr.w - SELECTION_INSET * 2,
+                  h = math.max(h - SELECTION_INSET * 2, 1) } }
     end
 
     local thumbX = rowX + ROW_EDGE_INSET
@@ -1139,22 +1153,22 @@ local function refreshRowCanvas()
     end
 
     local nameX = thumbX + THUMB_W + THUMB_TEXT_GAP
-    local metaX = rowX + M.config.metaTabStop
+    local metaX = rowX + META_TAB_STOP
     local textRight = rowX + rowW - SHORTCUT_INSET
     n = n + 1
     rowCanvas[n] = { type = "text", text = c.displayName or "",
-      textFont = UI_FONT, textSize = M.config.nameFontSize,
+      textFont = UI_FONT, textSize = NAME_FONT_SIZE,
       textLineBreak = "truncateTail",
       textColor = NAME_COLOR.alpha == 0 and { hex = "#F4F4F2" } or NAME_COLOR,
       frame = centeredTextFrame(nameX, metaX - nameX - COLUMN_GAP,
-                                y, h, M.config.nameFontSize) }
+                                y, h, NAME_FONT_SIZE) }
     n = n + 1
     rowCanvas[n] = { type = "text", text = c.displayMeta or "",
-      textFont = UI_FONT, textSize = M.config.metaFontSize,
+      textFont = UI_FONT, textSize = META_FONT_SIZE,
       textLineBreak = "truncateTail",
       textColor = { hex = "#FFFFFF", alpha = 0.45 },
       frame = centeredTextFrame(metaX, textRight - metaX,
-                                y, h, M.config.metaFontSize) }
+                                y, h, META_FONT_SIZE) }
   end
   rowCanvas:level(hs.canvas.windowLevels.popUpMenu)
   rowCanvas:clickActivating(false)
@@ -1165,11 +1179,12 @@ end
 local function showCloseButton()
   local fr = chooserAXFrame()
   if not fr then return end   -- cosmetic only; Esc/⌘W/click-off still close
-  local size = 18
-  closeCanvas = hs.canvas.new({ x = fr.x + fr.w - size - 8, y = fr.y + 9, w = size, h = size })
+  local size = ui(18)
+  closeCanvas = hs.canvas.new({ x = fr.x + fr.w - size - ui(8),
+                               y = fr.y + ui(9), w = size, h = size })
   closeCanvas[1] = { type = "circle", action = "fill",
                      fillColor = { white = 0.5, alpha = 0.35 } }
-  closeCanvas[2] = { type = "text", text = "✕", textSize = 11,
+  closeCanvas[2] = { type = "text", text = "✕", textSize = ui(11),
                      textAlignment = "center",
                      textColor = { white = 1, alpha = 0.9 },
                      frame = { x = "0%", y = "8%", w = "100%", h = "92%" } }
@@ -1209,7 +1224,7 @@ local function showPalette()
   setChoices(filteredChoices(""))
   -- chooser:width() is a percentage of the PRIMARY screen; convert the
   -- requested point width for whichever screen the panel will land on.
-  local wpx = math.min(M.config.paletteWidth, targetScreen():frame().w * 0.85)
+  local wpx = math.min(ui(M.config.paletteWidth), targetScreen():frame().w * 0.85)
   chooser:width(wpx / hs.screen.primaryScreen():frame().w * 100)
   chooser:show()
 end
