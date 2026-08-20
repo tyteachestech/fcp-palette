@@ -48,6 +48,56 @@ M.config = {
   fcpBundle  = "com.apple.FinalCut",
   maxResults = 50,
   debug      = false,  -- when true, apply flows log to /tmp/fcp-palette.log
+
+  -- Row look. Category tint uses tools/brand tokens (functional.info,
+  -- categorical.4, machineGreen, uiGray) so the palette reads as part of the
+  -- workspace rather than stock Hammerspoon grey.
+  -- "Transition" is RESERVED: build_catalog.py doesn't scan transitions yet,
+  -- so no row can carry it. The mapping is here so the colour is spoken for.
+  -- Two colours per category, because the wash and the accent have different
+  -- jobs. `categoryBand` is the row wash. Composited at rowTintAlpha over the
+  -- panel (#272727) these land on measured targets — Title #2E3E4D, Generator
+  -- #3B2F47, Effect #33453A — each ~15-18 ΔE from the panel. Equal WEIGHT is
+  -- the point: an earlier set put Generator at 25 ΔE and Title at 12, which
+  -- made the top of an alphabetical list look styled and the bottom look
+  -- unstyled, and drowned hs.chooser's own selection plate (only ~6.5 ΔE).
+  -- Separation is bought with hue, not chroma. Re-measure before changing.
+  categoryBand = {
+    ["Title"]         = "#3D6F9E",
+    ["Generator"]     = "#654089",
+    ["Video Effect"]  = "#4D8562",
+    ["Audio Effect"]  = "#4D8562",
+    ["Effect Preset"] = "#4D8562",
+    ["Transition"]    = "#6C6C78",
+  },
+  -- `categoryColor` is the accent: the chip stroke and its glyph, where the
+  -- colour sits on a small shape and has to stay legible.
+  categoryColor = {
+    ["Title"]         = "#6FA8FF",
+    ["Generator"]     = "#B08CFF",
+    ["Video Effect"]  = "#5BE08A",
+    ["Audio Effect"]  = "#5BE08A",
+    ["Effect Preset"] = "#5BE08A",
+    ["Transition"]    = "#C3CAD4",
+  },
+  -- One glyph per category for the chip, so the left column is a second read
+  -- of the band colour rather than 13 unrelated stamps.
+  categoryGlyph = {
+    ["Title"] = "T", ["Generator"] = "G", ["Video Effect"] = "fx",
+    ["Audio Effect"] = "fx", ["Effect Preset"] = "fx", ["Transition"] = "tr",
+  },
+  compactRows   = true,  -- one line per row (name + tinted category inline)
+  cornerRadius  = 5,     -- rounds the thumbnails and the no-thumb colour chips
+  rowTintAlpha  = 0.32,  -- band opacity; keep it translucent or hs.chooser's own
+                         -- selection highlight stops showing through the band
+  metaTabStop   = 190,   -- pt: the second column's left edge, so it is a column.
+                         -- 230 left a ~120pt desert after short names; 190 keeps
+                         -- ~130pt of name room, more than the longest seen so far
+  showThumbnails = true, -- false = the category glyph everywhere, no Final Cut
+                         -- previews (they carry little at ~12pt tall)
+  rowBandHeight = 24,    -- band and row height are coupled: hs.chooser pads the
+                         -- line box by a fixed amount, so a taller band just makes a
+                         -- taller row. 24 keeps rows compact and the band centred.
 }
 
 local function dbg(s)
@@ -678,6 +728,141 @@ local function recordUse(id)
   writeJSON(FRECENCY_PATH, log)
 end
 
+-- ── Row look ─────────────────────────────────────────────────────────────
+-- hs.chooser accepts an hs.styledtext for `text`/`subText` and an hs.image for
+-- `image`, which is the whole budget for styling a row. There is no per-row
+-- background API and no panel corner-radius API, so: the row wash is a
+-- styledtext `backgroundColor` stretched by trailing padding, and every
+-- rounded corner in sight is drawn by us inside the image well.
+-- Two measured facts this section is built on (2026-08-20):
+--   * Row height is NOT fixed — dropping `subText` shrinks it (8 rows: 537pt
+--     with subText vs 430pt without), which is what buys compactRows.
+--   * Row height = band height + ~12pt of padding hs.chooser adds and we
+--     can't remove, so a fuller band always costs results per screen.
+
+local UI_FONT    = ".AppleSystemUIFont"
+local NAME_COLOR = { hex = "#F4F4F2" }
+local META_COLOR = { hex = "#FFFFFF", alpha = 0.45 }
+local NEUTRAL    = "#9AA4B2"
+
+local function tintFor(category)
+  return (category and M.config.categoryColor[category]) or NEUTRAL
+end
+local function bandFor(category)
+  return (category and M.config.categoryBand[category]) or "#65656F"
+end
+
+-- The second column. The band colour already says the category, so the word
+-- is dropped — except for effects, where Video and Audio share one green and
+-- the word is the only thing telling them apart.
+local EFFECT_WORD = { ["Video Effect"] = "Video", ["Audio Effect"] = "Audio",
+                      ["Effect Preset"] = "Preset" }
+local function metaFor(category, set)
+  if not category then return "raw FCP search" end
+  local word = EFFECT_WORD[category]
+  if word and set then return word .. " · " .. set end
+  return word or set or category
+end
+
+-- Names longer than the tab stop would push the second column off its
+-- gridline, so they are clipped rather than allowed to break the column.
+local NAME_MAX = 30
+local function clip(name)
+  if #name <= NAME_MAX then return name end
+  return name:sub(1, NAME_MAX - 1) .. "…"
+end
+
+local function styledRow(name, category, set)
+  local band = { hex = bandFor(category), alpha = M.config.rowTintAlpha }
+  local para = { minimumLineHeight = M.config.rowBandHeight,
+                 maximumLineHeight = M.config.rowBandHeight,
+                 tabStops = { { location = M.config.metaTabStop, tabStopType = "left" } } }
+  local function run(str, size, color)
+    return hs.styledtext.new(str, { font = { name = UI_FONT, size = size },
+                                    color = color, backgroundColor = band,
+                                    paragraphStyle = para })
+  end
+  local nameRun = run(clip(name), 13, NAME_COLOR)
+  local metaRun = run("\t" .. metaFor(category, set), 11, META_COLOR)
+  -- The padding is what stretches the wash to the panel edge; overshoot it so
+  -- every row's band is clipped at the same x rather than ending on its text.
+  local padRun  = run(string.rep(" ", 900), 13, NAME_COLOR)
+  if M.config.compactRows then
+    return nameRun .. metaRun .. padRun, nil
+  end
+  return nameRun .. padRun, metaRun .. padRun
+end
+
+-- Rounded row art. Both caches are keyed by what they draw, so the canvas work
+-- happens once per distinct thumbnail/category, not once per keystroke.
+-- The art is drawn into a canvas TALLER than the art itself: hs.chooser scales
+-- the whole canvas into its well, so the transparent margin is how the visible
+-- chip is kept down to band height instead of punching through the band.
+local ART_W, ART_H   = 64, 30           -- the visible chip, 16:9-ish
+local CANVAS_H       = 44               -- the well; the rest is transparent
+local ART_Y          = 13               -- biased low: the well centres on the
+                                        -- ROW, but the band sits below centre
+local roundedCache, chipCache = {}, {}
+
+local function radii()
+  local r = M.config.cornerRadius * 2   -- art is drawn at 2x for retina
+  return { xRadius = r, yRadius = r }
+end
+local function artFrame(inset)
+  inset = inset or 0
+  return { x = inset, y = ART_Y + inset, w = ART_W - inset * 2, h = ART_H - inset * 2 }
+end
+
+local function newArtCanvas()
+  return hs.canvas.new({ x = 0, y = 0, w = ART_W, h = CANVAS_H })
+end
+
+-- Every thumbnail sits inside its category chip and is dimmed, so no single
+-- flat-white Final Cut preview out-shouts the item name next to it.
+local function roundedThumb(path, category)
+  local cached = roundedCache[path]
+  if cached ~= nil then return cached or nil end
+  local src = hs.image.imageFromPath(path)
+  if not src then roundedCache[path] = false return nil end
+  local cv = newArtCanvas()
+  cv[1] = { type = "rectangle", action = "fill", roundedRectRadii = radii(),
+            fillColor = { hex = bandFor(category), alpha = 0.9 }, frame = artFrame() }
+  cv[2] = { type = "rectangle", action = "clip", roundedRectRadii = radii(),
+            frame = artFrame() }
+  cv[3] = { type = "image", image = src, imageScaling = "scaleToFit",
+            imageAlpha = 0.82, frame = artFrame() }
+  cv[4] = { type = "resetClip" }
+  cv[5] = { type = "rectangle", action = "stroke", strokeWidth = 2,
+            strokeColor = { hex = tintFor(category), alpha = 0.5 },
+            roundedRectRadii = radii(), frame = artFrame(1) }
+  local out = cv:imageFromCanvas()
+  cv:delete()
+  roundedCache[path] = out or false
+  return out
+end
+
+-- Items with no thumbnail (audio units, most presets) get the same chip with
+-- the category's glyph, so the left column keeps one shape and one meaning.
+local function categoryChip(category)
+  local key = category or "_raw"
+  if chipCache[key] then return chipCache[key] end
+  local accent = tintFor(category)
+  local cv = newArtCanvas()
+  cv[1] = { type = "rectangle", action = "fill", roundedRectRadii = radii(),
+            fillColor = { hex = bandFor(category), alpha = 0.9 }, frame = artFrame() }
+  cv[2] = { type = "rectangle", action = "stroke", strokeWidth = 2,
+            strokeColor = { hex = accent, alpha = 0.5 },
+            roundedRectRadii = radii(), frame = artFrame(1) }
+  cv[3] = { type = "text", text = (category and M.config.categoryGlyph[category]) or "?",
+            textSize = 15, textAlignment = "center",
+            textColor = { hex = accent, alpha = 0.85 },
+            frame = { x = 0, y = ART_Y + 5, w = ART_W, h = ART_H } }
+  local out = cv:imageFromCanvas()
+  cv:delete()
+  chipCache[key] = out
+  return out
+end
+
 local allChoices = {}
 local catalogCache, catalogMtime
 
@@ -702,9 +887,10 @@ local function loadChoices()
   for _, item in ipairs(catalog) do
     if CATEGORIES[item.category] and not missing[item.category .. "/" .. item.name] then
       local id = item.category .. "/" .. item.name
+      local text, subText = styledRow(item.name, item.category, item.set)
       allChoices[#allChoices + 1] = {
-        text = item.name,
-        subText = item.category .. (item.set and (" · " .. item.set) or ""),
+        text = text,
+        subText = subText,
         id = id,
         name = item.name,
         category = item.category,
@@ -747,10 +933,11 @@ local function filteredChoices(query)
     end
     for _, c in ipairs(exact) do out[#out + 1] = c end
     for i = 1, math.min(#fuzzy, M.config.maxResults - #exact) do out[#out + 1] = fuzzy[i] end
-    out[#out + 1] = { text = "Search Titles & Generators for “" .. query .. "”",
-                      subText = "raw FCP search", fallback = "sidebar", query = query }
-    out[#out + 1] = { text = "Search Effects for “" .. query .. "”",
-                      subText = "raw FCP search", fallback = "effects", query = query }
+    for _, fb in ipairs({ { "Search Titles & Generators for “" .. query .. "”", "sidebar" },
+                          { "Search Effects for “" .. query .. "”", "effects" } }) do
+      local text, subText = styledRow(fb[1], nil, nil)
+      out[#out + 1] = { text = text, subText = subText, fallback = fb[2], query = query }
+    end
   end
   return out
 end
@@ -832,16 +1019,11 @@ end
 
 -- Browser thumbnails, loaded lazily for displayed rows only (≤52 at a time —
 -- never all 20k) and cached across shows. false = known-bad path.
-local imageCache = {}
 local function withImages(list)
   for _, c in ipairs(list) do
-    if c.thumb and not c.image then
-      local img = imageCache[c.thumb]
-      if img == nil then
-        img = hs.image.imageFromPath(c.thumb) or false
-        imageCache[c.thumb] = img
-      end
-      if img then c.image = img end
+    if not c.image then
+      c.image = (M.config.showThumbnails and c.thumb
+                 and roundedThumb(c.thumb, c.category)) or categoryChip(c.category)
     end
   end
   return list
@@ -950,6 +1132,7 @@ function M.start()
     if choice then applyChoice(choice) end
   end)
   chooser:queryChangedCallback(function(q) setChoices(filteredChoices(q)) end)
+  chooser:rows(13)   -- whole rows only; the default slices the last one
   chooser:placeholderText("Titles, generators, effects…")
   chooser:showCallback(chromeUp)
   chooser:hideCallback(chromeDown)

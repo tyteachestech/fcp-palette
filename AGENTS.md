@@ -64,6 +64,15 @@ Two source files, one direction of data flow:
   landed, and stacked duplicates hide behind each other at the same playhead
   position (dedupe timeline scans by frame x *and* y).
 - Test against real catalog names (`catalog.lua`), never guessed ones.
+- Row styling lives entirely in `M.config` (`categoryBand`, `categoryColor`,
+  `categoryGlyph`, `rowTintAlpha`, `rowBandHeight`, `metaTabStop`,
+  `compactRows`, `showThumbnails`). Read SPEC's "Row styling" section before
+  touching it — `hs.chooser` has no per-row background, no corner radius and no
+  row-height API, so each of those values is working around a measured limit,
+  not expressing a preference. Judge any change by screenshotting the real
+  palette and sampling pixels; colour separation at 0.32 alpha over a dark
+  panel is not reliably eyeballed.
+
 - Debugging: `fcpPalette.config.debug = true` logs to `/tmp/fcp-palette.log`.
   The `hs` CLI reply channel wedges routinely while the Lua side completes
   fine, and a waiting shell then hangs forever. So never block on `hs -c`

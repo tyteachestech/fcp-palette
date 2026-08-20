@@ -205,6 +205,44 @@ lane can drift): those fail loud at apply and stay reachable via raw search.
 - Scripting surface: `fcpPalette.apply(category, name)`, `.show()`,
   `.refreshCatalog()`, `.config.debug = true` (logs to `/tmp/fcp-palette.log`).
 
+## Row styling — what `hs.chooser` can and cannot do (verified 2026-08-20)
+
+The palette's look is bounded by `hs.chooser`, which exposes exactly three
+levers per row: `text` and `subText` (each a string **or an `hs.styledtext`**)
+and `image` (an `hs.image` drawn in a fixed well at the left). Everything the
+palette does visually is built from those three. Measured, not assumed:
+
+- **Row height is not fixed.** Supplying `subText` makes rows taller; omitting
+  it makes them shorter — 8 rows measured 537pt with subText and 430pt
+  without. That is what makes single-line (`compactRows`) rows worth having:
+  they buy real density, not just a different arrangement of the same text.
+- **There is no per-row background API.** The category wash is an
+  `hs.styledtext` `backgroundColor` attribute stretched across the row by ~900
+  trailing spaces; the panel clips the overshoot, so every band ends at the
+  same x. The band starts where the row's *text* starts, so it cannot reach
+  left under the image well — that inset is structural.
+- **Band height and row height are coupled.** Row height = the paragraph
+  style's line height + ~12pt of padding `hs.chooser` adds and that cannot be
+  removed. A band that fills more of its row always costs results per screen;
+  `rowBandHeight` is where that trade-off is set.
+- **Keep the band translucent.** `hs.chooser` draws its own selection plate
+  *under* the row text; at low `rowTintAlpha` the plate still reads through an
+  opaque-looking band. At high alpha the cursor disappears — and the cursor is
+  the one signal a Return-to-commit tool cannot afford to lose. Category bands
+  are therefore held near-equal in weight (~15-18 ΔE from the panel) and
+  separated by hue, never by making one category louder.
+- **Paragraph-style tab stops work**, and are how the second column is a
+  column rather than text concatenated after a ragged name.
+- **No API exists for**: the panel's corner radius (its square corners cannot
+  be changed), row spacing, padding, the selection highlight, or the ⌘1-9
+  glyphs. Every rounded corner in the palette is drawn by us inside the image
+  well, which is the one free canvas.
+- **The image well centres on the ROW, not on the band.** Art is therefore
+  drawn into a taller transparent canvas and biased downward, so the chip sits
+  on its band instead of punching through it.
+- Gotcha: `pairs()` over `hs.styledtext.defaultFonts`, and `tostring()` on an
+  `hs.styledtext` object, both blow the Lua stack. Address the keys directly.
+
 ## Known limitations (accepted for v1)
 
 - **Fuzzy-match fallback**: cells carry their names, so an exact title match is
