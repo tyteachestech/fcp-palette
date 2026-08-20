@@ -223,8 +223,9 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   preserve the chooser's row sizing and accessibility structure.
 - **Band height and row height are coupled.** Row height still comes from the
   transparent styled text's line height plus chooser padding. `rowBandHeight`
-  therefore remains the row-density control; `visibleRows` compensates for the
-  2x 26pt/22pt text so the panel stays near its former screen height.
+  therefore remains the row-density control. `visibleRows` is 9, making the
+  panel roughly 30% taller than the former 7-row layout and showing two more
+  complete results.
 - **Keep the band translucent.** `hs.chooser` draws its own selection plate
   *under* the row text; at low `rowTintAlpha` the plate still reads through an
   opaque-looking band. At high alpha the cursor disappears — and the cursor is

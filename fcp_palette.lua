@@ -100,7 +100,7 @@ M.config = {
                          -- line box by a fixed amount, so a taller band just makes a
                          -- taller row.
   paletteWidth  = 1180,  -- room for the enlarged name and metadata columns
-  visibleRows   = 7,     -- keeps the overall panel near its former screen height
+  visibleRows   = 9,     -- two more whole rows; closest clean fit to 30% taller
 }
 
 local function dbg(s)
