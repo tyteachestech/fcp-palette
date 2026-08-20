@@ -233,6 +233,13 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
   separated by hue, never by making one category louder.
 - **Column position scales with the type.** `metaTabStop` is also the canvas
   metadata x-position, doubled from the original value with the font sizes.
+- **Text is optically centered from measured line boxes.** Each canvas text
+  frame uses `hs.drawing.getTextDrawingSize` for its actual font size, then
+  centers that height inside the live AX row frame. Name and metadata no longer
+  depend on separate hand-tuned y offsets.
+- **Horizontal spacing is explicit.** The row edge to thumbnail and thumbnail
+  to name gaps are both 16pt; the name-to-metadata gap is 24pt, and the native
+  shortcut column keeps a reserved 76pt at the right.
 - **The fixed image well cannot display a 2x thumbnail.** The chooser keeps a
   small native image as a fail-safe; the canvas draws the visible 88x60pt art.
 - **No API exists for**: the panel's corner radius, selection plate, or the

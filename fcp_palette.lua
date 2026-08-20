@@ -23,6 +23,7 @@
 --   fcpPalette = require("fcp_palette").start()
 
 local ax = require("hs.axuielement")
+local drawing = require("hs.drawing")
 -- Preload every extension used inside callbacks: loading one lazily mid-flow
 -- (e.g. hs.json on the first frecency/tombstone write) errors out of the
 -- callback with only an "hs.ipc … recursing" storm as evidence.
@@ -742,6 +743,11 @@ end
 --     can't remove, so a fuller band always costs results per screen.
 
 local UI_FONT    = ".AppleSystemUIFont"
+local ROW_EDGE_INSET = 16
+local THUMB_W, THUMB_H = 88, 60
+local THUMB_TEXT_GAP = 16
+local COLUMN_GAP = 24
+local SHORTCUT_INSET = 76
 -- The chooser still owns row geometry, selection, scrolling and the native
 -- ⌘1–9 badges. Its text is transparent because `rowCanvas` draws the visible
 -- 2x type, thumbnails and edge-to-edge colour without replacing that behavior.
@@ -788,13 +794,26 @@ local function styledRow(name, category, set)
   end
   local nameRun = run(clip(name), M.config.nameFontSize, NAME_COLOR)
   local metaRun = run("\t" .. metaFor(category, set), M.config.metaFontSize, META_COLOR)
-  -- The padding is what stretches the wash to the panel edge; overshoot it so
-  -- every row's band is clipped at the same x rather than ending on its text.
+  -- Keep the native line wide enough to preserve the chooser's measured row
+  -- geometry; the visible wash itself is painted by rowCanvas.
   local padRun  = run(string.rep(" ", 900), M.config.nameFontSize, NAME_COLOR)
   if M.config.compactRows then
     return nameRun .. metaRun .. padRun, nil
   end
   return nameRun .. padRun, metaRun .. padRun
+end
+
+local function centeredTextFrame(x, width, rowY, rowH, fontSize)
+  local measured = drawing.getTextDrawingSize("Ag", {
+    font = UI_FONT, size = fontSize, lineBreak = "clip",
+  })
+  local textH = math.ceil((measured and measured.h) or fontSize * 1.25)
+  return {
+    x = x,
+    y = rowY + math.max(0, math.floor((rowH - textH) / 2)),
+    w = math.max(1, width),
+    h = textH,
+  }
 end
 
 -- Rounded row art. Both caches are keyed by what they draw, so the canvas work
@@ -1080,37 +1099,40 @@ local function refreshRowCanvas()
   local n = 0
   for _, v in ipairs(visible) do
     local rf, c = v.frame, v.choice
+    local rowX = math.floor(rf.x - fr.x)
+    local rowW = math.ceil(rf.w)
     local y = math.floor(rf.y - fr.y)
     local h = math.ceil(rf.h) + 1 -- 1pt overlap prevents a hairline at row joins
     n = n + 1
     rowCanvas[n] = { type = "rectangle", action = "fill",
       fillColor = { hex = bandFor(c.category), alpha = M.config.rowTintAlpha },
-      frame = { x = math.floor(rf.x - fr.x), y = y,
-                w = math.ceil(rf.w), h = h } }
+      frame = { x = rowX, y = y, w = rowW, h = h } }
 
-    local artW, artH = 88, 60
+    local thumbX = rowX + ROW_EDGE_INSET
     if c.rowArt then
       n = n + 1
       rowCanvas[n] = { type = "image", image = c.rowArt, imageScaling = "scaleToFit",
-        frame = { x = 12, y = y + (h - artH) / 2, w = artW, h = artH } }
+        frame = { x = thumbX, y = y + (h - THUMB_H) / 2,
+                  w = THUMB_W, h = THUMB_H } }
     end
 
-    local textY = y + math.max(0, (h - M.config.rowBandHeight) / 2)
+    local nameX = thumbX + THUMB_W + THUMB_TEXT_GAP
+    local metaX = rowX + M.config.metaTabStop
+    local textRight = rowX + rowW - SHORTCUT_INSET
     n = n + 1
     rowCanvas[n] = { type = "text", text = c.displayName or "",
       textFont = UI_FONT, textSize = M.config.nameFontSize,
       textLineBreak = "truncateTail",
       textColor = NAME_COLOR.alpha == 0 and { hex = "#F4F4F2" } or NAME_COLOR,
-      frame = { x = 104, y = textY + 7,
-                w = M.config.metaTabStop - 112, h = M.config.rowBandHeight } }
+      frame = centeredTextFrame(nameX, metaX - nameX - COLUMN_GAP,
+                                y, h, M.config.nameFontSize) }
     n = n + 1
     rowCanvas[n] = { type = "text", text = c.displayMeta or "",
       textFont = UI_FONT, textSize = M.config.metaFontSize,
       textLineBreak = "truncateTail",
       textColor = { hex = "#FFFFFF", alpha = 0.45 },
-      frame = { x = M.config.metaTabStop + 16, y = textY + 9,
-                w = math.max(80, fr.w - M.config.metaTabStop - 96),
-                h = M.config.rowBandHeight } }
+      frame = centeredTextFrame(metaX, textRight - metaX,
+                                y, h, M.config.metaFontSize) }
   end
   rowCanvas:level(hs.canvas.windowLevels.popUpMenu)
   rowCanvas:clickActivating(false)
