@@ -78,7 +78,47 @@ to the module. It takes a few seconds and prints how many items it found.
 | Change the hotkey | `M.config.hotkey` at the top of `fcp_palette.lua` |
 | Debug a flow | `fcpPalette.config.debug = true` → `/tmp/fcp-palette.log` |
 | Apply from a script | `fcpPalette.apply("Video Effect", "Gaussian")` |
+| Export the open timeline as FCPXML | `fcpPalette.exportXML("/abs/path/no-ext")` — see below |
 | Restore items auto-hidden as not-in-browser | `hs -c 'fcpPalette.resetMissing()'` |
+
+## Exporting the open timeline as FCPXML
+
+Final Cut has no export API, so getting the current timeline out of it means a
+human clicking through *File → Export XML…* and a save dialog. The palette can
+do that for you:
+
+```lua
+fcpPalette.exportXML("/Users/you/exports/my-cut", {resultFile = "/tmp/x.json"})
+```
+
+The path is **absolute and has no extension** — Final Cut appends its own (on
+12.x that's a `.fcpxmld` package containing `Info.fcpxml`, FCPXML version
+1.14). It must not already exist; the "Replace?" prompt is reported as an
+error rather than answered, so pass a unique name.
+
+It makes Final Cut frontmost, targets the **timeline's** project (not whatever
+is selected in a browser), drives the save panel, waits for the file to finish
+being written, and hands the screen back to whatever app you were using.
+
+Read the outcome from the **result file**, not from the command's output — the
+`hs` command-line tool's reply channel is unreliable for anything slow, so run
+it in the background and poll:
+
+```bash
+hs -t 45 -c 'fcpPalette.exportXML("/Users/you/exports/my-cut")' >/dev/null 2>&1 &
+# …then poll /tmp/fcp-palette-export.json (override with opts.resultFile)
+```
+
+`-t 45` matters: the tool's own timeout defaults to **four seconds**, which is
+shorter than the export takes.
+
+```json
+{"ok": true, "path": "…/my-cut.fcpxmld/Info.fcpxml", "project": "My Cut",
+ "bytes": 101917, "ms": 4441}
+```
+
+A failure writes `{"ok": false, "error": "…"}` and posts a notification. A
+typical run takes 4–8 seconds and gives up after 30.
 
 ## How it works
 

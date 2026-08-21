@@ -1262,6 +1262,340 @@ function M.apply(category, name)
   applyChoice({ category = category, name = name, id = category .. "/" .. name })
 end
 
+-- ── Scripted FCPXML export ───────────────────────────────────────────────
+-- Final Cut has no export API, so "get the project that is open in the
+-- timeline out of FCP" is an AX sequence: Window → Go To → Timeline (so the
+-- export targets the TIMELINE's project, not whatever a browser has selected),
+-- then File → Export XML…, then drive the NSSavePanel it opens.
+--
+-- Verified on Final Cut Pro 12.3, 2026-08-21 — full detail in SPEC.md,
+-- "Scripted XML export":
+--   * The panel is an APP-LEVEL AXWindow: AXIdentifier "save-panel",
+--     AXSubrole AXDialog, AXModal true. It is NOT an AXSheet on the main
+--     window, so a sheet-only search never finds it.
+--   * Name field = AXIdentifier "saveAsNameTextField". It pre-fills with
+--     "<project name>.fcpxmld", the cheapest readout of the project name.
+--   * FALSIFIED: writing a FULL PATH into that field does not navigate.
+--     NSSavePanel takes the text literally and writes
+--     ":Users:…:name.fcpxmld" into the panel's current folder. The folder must
+--     be set with ⌘⇧G → AXSheet "GoToWindow" → AXTextField "PathTextField"
+--     → Return, which is verified here by re-reading the "where popup".
+--   * Save = AXButton "OKButton"; Cancel = AXButton "CancelButton". The
+--     Version popup already reads "Current Version (1.14)" — left untouched.
+--   * FCP writes FCPXML 1.14 as a .fcpxmld PACKAGE (a folder holding
+--     Info.fcpxml), so the result resolves to the .fcpxml FILE inside it.
+--   * hs.application.frontmostApplication() goes STALE through this sequence:
+--     the blocking waits never yield the main thread, so Hammerspoon cannot
+--     process the workspace notification and keeps reporting the old app. The
+--     frontmost gate therefore reads AXFrontmost off the app element, a live
+--     AX query.
+
+local function axById(root, id, depth, visits)
+  return findFirst(root, function(e) return attr(e, "AXIdentifier") == id end,
+                   depth or 3, visits or 500)
+end
+
+-- Whoever currently owns the keyboard, read live off the system-wide element
+-- (see the staleness note above).
+local function focusedApp()
+  local sys = ax.systemWideElement()
+  local fa  = sys and attr(sys, "AXFocusedApplication")
+  local pid = fa and fa:pid()
+  return (pid and hs.application.applicationForPID(pid))
+      or hs.application.frontmostApplication()
+end
+
+-- FCP's Export XML save panel, wherever this build hangs it (app-level dialog
+-- on 12.3; the main-window sheet lookup is the defensive fallback).
+local function exportPanel(axapp)
+  for _, c in ipairs(attr(axapp, "AXChildren") or {}) do
+    if attr(c, "AXIdentifier") == "save-panel" then return c end
+  end
+  for _, c in ipairs(attr(attr(axapp, "AXMainWindow"), "AXChildren") or {}) do
+    if attr(c, "AXRole") == "AXSheet" then return c end
+  end
+end
+
+-- Resolve what FCP actually wrote to the .fcpxml FILE: a 12.x .fcpxmld package
+-- (folder + Info.fcpxml) or, on older builds, a plain .fcpxml.
+local function exportArtifact(dest)
+  local bundle = dest .. ".fcpxmld"
+  local inner  = bundle .. "/Info.fcpxml"
+  if hs.fs.attributes(inner, "size") then return inner, bundle end
+  local plain = dest .. ".fcpxml"
+  if hs.fs.attributes(plain, "size") then return plain, nil end
+end
+
+-- The driven sequence. Errors (level 0, so the message stays clean) at every
+-- step it cannot verify; M.exportXML owns the cleanup and the result file.
+local function exportXMLRun(dest, t0, budget)
+  -- Remaining budget, so one wedged step can never outlive the whole op.
+  local function left(cap)
+    local rem = (t0 + budget) - hs.timer.secondsSinceEpoch()
+    if rem <= 0 then error("timed out after " .. budget .. "s", 0) end
+    return cap and math.min(rem, cap) or rem
+  end
+
+  local app = fcp()
+  if not app then error("Final Cut Pro isn't running", 0) end
+  local axapp = axApp(app)
+
+  -- A leftover modal would swallow every keystroke below.
+  if exportPanel(axapp) then
+    error("a Final Cut save panel is already open — close it first", 0)
+  end
+
+  -- ⌘⇧G and Return go to the frontmost app. AXFrontmost is a LIVE read but it
+  -- still lags the real activation (measured: FCP had already revalidated its
+  -- menus while this read false), so a miss here is logged, not fatal — the
+  -- menu gate below, and every AX wait after it, are the real proofs.
+  local front = waitFor(function()
+    if attr(axapp, "AXFrontmost") == true then return true end
+    app:activate(true)
+  end, left(4), 0.2)
+  dbg("exportXML: activated FCP, AXFrontmost=" .. tostring(front))
+
+  -- Target the timeline's project rather than a browser selection.
+  if not goTo(app, "Timeline", nil, "AXLayoutArea") then
+    error("Window → Go To → Timeline didn't focus the timeline", 0)
+  end
+  dbg("exportXML: timeline focused")
+
+  -- The menu title ends in a U+2026 ellipsis — read it off the menu bar rather
+  -- than hardcoding the character.
+  local function exportItem()
+    for _, m in ipairs(attr(attr(axapp, "AXMenuBar"), "AXChildren") or {}) do
+      if attr(m, "AXTitle") == "File" then
+        for _, it in ipairs(attr((attr(m, "AXChildren") or {})[1], "AXChildren") or {}) do
+          local t = attr(it, "AXTitle")
+          if t and t:sub(1, 10) == "Export XML" then return it, t end
+        end
+      end
+    end
+  end
+  local item, menuTitle = exportItem()
+  if not item then
+    error("File → Export XML… is missing from Final Cut's menu", 0)
+  end
+  -- Two things have to be true before this command works, and neither is
+  -- instant: the timeline has to be the active target (the Go To above) and
+  -- Final Cut has to revalidate its menus, which it does a BEAT after coming
+  -- forward (measured ~1.4 s on 12.3). Selecting an item it still considers
+  -- disabled does nothing at all — silently — so wait for the rising edge.
+  -- SPEC's staleness warning is about trusting AXEnabled=true as proof that a
+  -- *previous* action landed; as a readiness gate it is the honest signal, and
+  -- the save panel appearing is what actually proves the command ran.
+  if not waitFor(function()
+        local it = exportItem()
+        return it and attr(it, "AXEnabled") == true
+      end, left(8), 0.1) then
+    error("Final Cut reports “" .. menuTitle ..
+          "” disabled — is a project open in the timeline?", 0)
+  end
+  dbg("exportXML: " .. menuTitle .. " enabled")
+
+  if not app:selectMenuItem({ "File", menuTitle }) then
+    error("File → " .. menuTitle ..
+          " wouldn't select — is a project open in the timeline?", 0)
+  end
+
+  local panel = waitFor(function() return exportPanel(axapp) end, left(10), 0.05)
+  if not panel then
+    error("File → " .. menuTitle ..
+          " opened no save panel — is a project open in the timeline?", 0)
+  end
+  dbg("exportXML: save panel up")
+
+  local nameField = waitFor(function()
+    return axById(panel, "saveAsNameTextField", 3)
+  end, left(5), 0.05)
+  if not nameField then
+    error("the save panel has no name field (AXIdentifier saveAsNameTextField)", 0)
+  end
+  -- The pre-filled name IS the project name — read it before overwriting.
+  local project = attr(nameField, "AXValue")
+  if project then project = project:gsub("%.fcpxmld?$", "") end
+  dbg("exportXML: project=" .. tostring(project))
+
+  -- Folder: ⌘⇧G, because a path typed into the name field is taken literally.
+  local dir = dest:match("^(.*)/[^/]+$")
+  hs.eventtap.keyStroke({ "cmd", "shift" }, "g")
+  local pathField = waitFor(function()
+    return axById(panel, "PathTextField", 3)
+  end, left(6), 0.05)
+  if not pathField then
+    error("⌘⇧G didn't open the save panel's Go To Folder sheet", 0)
+  end
+  pathField:setAttributeValue("AXFocused", true)
+  sleep(0.15)
+  pathField:setAttributeValue("AXValue", dir .. "/")
+  if not waitFor(function() return attr(pathField, "AXValue") == dir .. "/" end,
+                 left(2), 0.05) then
+    error("couldn't set the Go To Folder path (it reads “" ..
+          tostring(attr(pathField, "AXValue")) .. "”)", 0)
+  end
+  hs.eventtap.keyStroke({}, "return")
+  if not waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end,
+                 left(5), 0.05) then
+    error("the Go To Folder sheet wouldn't accept " .. dir, 0)
+  end
+
+  -- Prove the panel really moved before pressing Save: a Save into the wrong
+  -- folder is exactly the silent-junk failure this whole detour exists to stop.
+  local wantFolder = dir:match("([^/]+)$")
+  local wherePop = axById(panel, "where popup", 3)
+  if not waitFor(function() return attr(wherePop, "AXValue") == wantFolder end,
+                 left(3), 0.05) then
+    error(string.format("the save panel is in “%s”, not “%s” — refusing to Save",
+                        tostring(attr(wherePop, "AXValue")),
+                        tostring(wantFolder)), 0)
+  end
+  dbg("exportXML: navigated to " .. dir)
+
+  -- Filename: no extension — FCP appends the one it is writing.
+  local base = dest:match("([^/]+)$")
+  nameField:setAttributeValue("AXFocused", true)
+  sleep(0.15)
+  nameField:setAttributeValue("AXValue", base)
+  if not waitFor(function() return attr(nameField, "AXValue") == base end,
+                 left(3), 0.05) then
+    error("couldn't set the export filename (it reads “" ..
+          tostring(attr(nameField, "AXValue")) .. "”)", 0)
+  end
+
+  local saveBtn = axById(panel, "OKButton", 3)
+  if not saveBtn then
+    error("the save panel has no Save button (AXIdentifier OKButton)", 0)
+  end
+  saveBtn:performAction("AXPress")
+  if not waitFor(function()
+        -- A sheet on the panel is Final Cut asking something (almost always
+        -- "…already exists. Replace?"). Never answer it — the caller owns
+        -- uniqueness, so an ask means the contract was broken.
+        for _, c in ipairs(attr(panel, "AXChildren") or {}) do
+          if attr(c, "AXRole") == "AXSheet" then
+            error("the save panel asked a question (“" ..
+                  tostring(rowText(c)) .. "”) — aborting rather than answering", 0)
+          end
+        end
+        return exportPanel(axapp) == nil
+      end, left(8), 0.1) then
+    error("the save panel didn't close after Save", 0)
+  end
+  dbg("exportXML: saved, waiting for " .. dest)
+
+  -- FCP writes the package after the panel closes.
+  local file, bundle
+  if not waitFor(function()
+        file, bundle = exportArtifact(dest)
+        return file ~= nil
+      end, left(15), 0.1) then
+    error("Final Cut wrote nothing to " .. dest .. ".fcpxmld (or .fcpxml)", 0)
+  end
+  -- …and writes it progressively: a half-written Info.fcpxml is truncated XML.
+  local bytes
+  if not waitFor(function()
+        local a = hs.fs.attributes(file, "size")
+        sleep(0.3)
+        local b = hs.fs.attributes(file, "size")
+        if a and b and a == b and b > 0 then bytes = b return true end
+      end, left(12), 0.05) then
+    error("the exported XML never stopped growing: " .. file, 0)
+  end
+  dbg(string.format("exportXML: wrote %s (%d bytes)", file, bytes))
+
+  return { path = file, bundle = bundle, project = project, bytes = bytes }
+end
+
+-- Export the project open in FCP's timeline to <path>.fcpxmld / .fcpxml and
+-- record the outcome in opts.resultFile.
+--
+-- `path` is an ABSOLUTE destination with NO extension (Final Cut appends what
+-- it writes) and must not already exist — the caller owns uniqueness, because
+-- the "Replace?" sheet is treated as an error rather than answered.
+--
+-- The result file is the contract, not stdout: the `hs` CLI reply channel
+-- wedges routinely while the Lua side finishes fine, so callers background
+-- `hs -c '…' >/dev/null 2>&1` and poll this file instead.
+--   { ok = true,  path = "<…/Info.fcpxml>", bundle = "<….fcpxmld>",
+--     project = "<name>", bytes = N, restored = true, ms = N }
+--   { ok = false, error = "…", restored = true, ms = N }
+function M.exportXML(path, opts)
+  opts = opts or {}
+  local resultFile = opts.resultFile or "/tmp/fcp-palette-export.json"
+  local budget = tonumber(opts.timeout) or 30
+  local t0 = hs.timer.secondsSinceEpoch()
+
+  -- Breadcrumb, written before anything else can block. It is the only way a
+  -- caller can tell "hs.ipc refused this request outright" (file still empty,
+  -- CLI client gone) from "the export is running" (file says running) — the
+  -- refusal is silent on this side and the client exits in both cases.
+  writeJSON(resultFile, { running = true, started = t0 })
+
+  -- Captured before anything blocks: this runs unattended, so the session must
+  -- be handed back to whoever had the screen.
+  local prev = focusedApp()
+
+  local dest, err = tostring(path or ""), nil
+  if dest:sub(1, 1) ~= "/" then
+    err = "exportXML needs an absolute destination path, got “" .. dest .. "”"
+  else
+    dest = dest:gsub("/+$", ""):gsub("%.fcpxmld?$", "")
+    local dir = dest:match("^(.*)/[^/]+$")
+    if not dir or dir == "" then
+      err = "exportXML needs a destination inside a folder, got “" .. dest .. "”"
+    elseif hs.fs.attributes(dir, "mode") ~= "directory" then
+      err = "destination folder doesn't exist: " .. dir
+    elseif hs.fs.attributes(dest .. ".fcpxmld")
+        or hs.fs.attributes(dest .. ".fcpxml") then
+      err = "destination already exists: " .. dest .. " — pass a unique name"
+    end
+  end
+
+  local res
+  if not err then
+    local ok, out = pcall(exportXMLRun, dest, t0, budget)
+    if ok then res = out else err = tostring(out) end
+  end
+
+  -- A half-driven modal would wedge every later AX sequence, so always leave
+  -- the panel closed.
+  local app = fcp()
+  local axapp = app and axApp(app)
+  if err and axapp then
+    local panel = exportPanel(axapp)
+    if panel then
+      local cancel = axById(panel, "CancelButton", 3)
+      if cancel then cancel:performAction("AXPress")
+      else hs.eventtap.keyStroke({}, "escape") end
+      waitFor(function() return exportPanel(axapp) == nil end, 3, 0.1)
+    end
+  end
+
+  local restored = true
+  if prev and prev:bundleID() ~= M.config.fcpBundle then
+    prev:activate(true)
+    restored = waitFor(function()
+      local f = focusedApp()
+      return f and f:pid() == prev:pid()
+    end, 3, 0.1) == true
+  end
+
+  local ms = math.floor((hs.timer.secondsSinceEpoch() - t0) * 1000 + 0.5)
+  local result
+  if err then
+    dbg("exportXML FAILED: " .. err)
+    notify("FCPXML export failed: " .. err)
+    result = { ok = false, error = err, restored = restored, ms = ms }
+  else
+    result = { ok = true, path = res.path, bundle = res.bundle,
+               project = res.project, bytes = res.bytes,
+               restored = restored, ms = ms }
+  end
+  writeJSON(resultFile, result)
+  return result
+end
+
 -- Forget every tombstoned item (e.g. after installing an update that makes
 -- previously-hidden templates appear in FCP's browser).
 function M.resetMissing()

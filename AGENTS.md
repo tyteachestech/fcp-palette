@@ -17,6 +17,11 @@ python3 build_catalog.py                          # rebuild catalog.lua (+ catal
 hs -c 'hs.reload()' >/dev/null 2>&1               # reload Hammerspoon after editing fcp_palette.lua
 hs -c 'fcpPalette.refreshCatalog()' >/dev/null 2>&1   # force a catalog rebuild through the palette
 hs -c 'fcpPalette.apply("Video Effect", "Gaussian")' >/dev/null 2>&1   # scripted apply (real project!)
+hs -t 45 -c 'fcpPalette.exportXML("/abs/dest-no-ext", {resultFile="/tmp/x.json"})' >/dev/null 2>&1 &
+                                                  # export the OPEN TIMELINE as FCPXML; poll
+                                                  # the result file, never the reply channel.
+                                                  # -t 45 because the CLI default is 4 SECONDS.
+                                                  # From the workspace: ./content fcp export [name]
 tail -f /tmp/fcp-palette.log                      # after: hs -c 'fcpPalette.config.debug = true' …
 pkill -9 -f '^hs -c'                              # kill wedged hs CLI clients (not Hammerspoon itself)
 ```
@@ -81,6 +86,12 @@ Two source files, one direction of data flow:
   result to a file, and read that file. Clean up strays with
   `pkill -9 -f '^hs -c'` — it kills only CLI clients, not Hammerspoon.
 - Runtime state (`catalog.lua`, `frecency.json`) stays git-ignored.
+- `fcpPalette.exportXML(path, opts)` drives Final Cut's Export XML save panel.
+  Two things there are easy to get wrong and both fail *silently*: a full path
+  typed into the name field is taken literally (`:Users:…`), and *Export XML…*
+  only goes live a beat after FCP comes forward AND the timeline is the
+  target. Read SPEC's "Scripted XML export" before touching it — including the
+  `hs.ipc` refusal and the 4-second CLI timeout.
 - Never load the catalog with `hs.json.decode` — it freezes Hammerspoon for
   tens of seconds at this file size (and masquerades as an IPC wedge). The
   palette loads the generated `catalog.lua` via `dofile`.

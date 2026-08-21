@@ -278,6 +278,112 @@ while escaping two fixed-cell visual limits. Measured, not assumed:
 - Gotcha: `pairs()` over `hs.styledtext.defaultFonts`, and `tostring()` on an
   `hs.styledtext` object, both blow the Lua stack. Address the keys directly.
 
+## Scripted XML export (verified 2026-08-21, FCP 12.3)
+
+`fcpPalette.exportXML(path, opts)` gets the project that is **open in the
+timeline** out of Final Cut with no human action. Final Cut has no export API,
+so the whole thing is an AX sequence: *Window → Go To → Timeline* (so the
+export targets the timeline's project and not a browser selection) → *File →
+Export XML…* → drive the NSSavePanel that opens.
+
+`path` is an **absolute destination with no extension** — Final Cut appends
+what it writes. It must not already exist: the caller owns uniqueness, because
+the "Replace?" sheet is treated as an error rather than answered.
+
+The **result file is the contract, never stdout** — the `hs` CLI reply channel
+wedges routinely while the Lua side finishes fine, so callers background
+`hs -c '…'` and poll `opts.resultFile` (default
+`/tmp/fcp-palette-export.json`):
+
+```json
+{"ok": true, "path": "…/name.fcpxmld/Info.fcpxml", "bundle": "…/name.fcpxmld",
+ "project": "Chappie V2", "bytes": 101917, "restored": true, "ms": 4441}
+```
+
+A `running` breadcrumb is written *before anything can block*, so a caller can
+tell "the export is under way" from "`hs.ipc` refused the request and ran
+nothing" (see the gotchas). Failure writes `{"ok": false, "error": "…"}` and
+also notifies.
+
+### The save panel's AX shape
+
+| What | Where |
+|---|---|
+| The panel | An **app-level `AXWindow`**, `AXIdentifier` **`save-panel`**, `AXSubrole` `AXDialog`, `AXModal` true — **not** an `AXSheet` on the main window, so a sheet-only search never finds it |
+| Filename | `AXTextField` `AXIdentifier` **`saveAsNameTextField`** |
+| Folder | `AXPopUpButton` `AXIdentifier` **`where popup`**, value = the folder's display name |
+| Go To Folder sheet (⌘⇧G) | `AXSheet` **`GoToWindow`** → `AXTextField` **`PathTextField`** (focused on open) |
+| Version | `AXPopUpButton` reading **"Current Version (1.14)"** — left untouched |
+| Save / Cancel | `AXButton` **`OKButton`** (title "Save") / **`CancelButton`**; also `NewFolderButton` |
+
+The menu item's title is **`Export XML…`** with a U+2026 ellipsis
+(`45 78 70 6F 72 74 20 58 4D 4C E2 80 A6`), so it is read off the menu bar by
+prefix rather than typed as a literal.
+
+### Falsified: a full path in the name field does not navigate
+
+Writing `/Users/…/AI/fcp/name` into `saveAsNameTextField` sets and **reads back
+cleanly**, and Save is accepted — but NSSavePanel takes the string *literally*
+and writes `:Users:tylerpoelking:content:videos:chappie:AI:fcp:name.fcpxmld`
+into whatever folder the panel was already showing. Silent junk in the wrong
+place. **Falsified 2026-08-21.** The folder must be set with ⌘⇧G, and the
+`where popup` re-read to prove the panel moved *before* Save is pressed.
+
+### FCP 12.x writes a package, progressively
+
+The export is a **`.fcpxmld` package** — a folder holding `Info.fcpxml` — at
+**FCPXML version 1.14**. `exportXML` accepts either that or a plain `.fcpxml`
+and resolves the result to the `.fcpxml` **file**, then waits for its size to
+hold across two 0.3 s reads: the package appears before it is finished, and a
+half-written `Info.fcpxml` parses as truncated XML.
+
+The name field pre-fills with `<project name>.fcpxmld`, which is the cheapest
+readout of the project name — read it *before* overwriting it.
+
+### Timing and readiness — two gates, not one
+
+*Export XML…* only becomes live when **both** are true, and neither is instant:
+
+1. the timeline is the active target (*Go To → Timeline*), and
+2. Final Cut has revalidated its menus, which it does a **beat after coming
+   forward** — measured **~1.4 s** after `activate()` on 12.3.
+
+Selecting an item Final Cut still considers disabled does **nothing at all,
+silently**, so `exportXML` waits for `AXEnabled` to go true after the Go To.
+This does not contradict the staleness rule above: `AXEnabled` is untrustworthy
+as *proof a previous action landed*, but its rising edge is the honest
+readiness signal — and the save panel appearing is what actually proves the
+command ran.
+
+`AXFrontmost` on the app element is a live read (unlike
+`hs.application.frontmostApplication()`, which **goes stale through the whole
+sequence** — the blocking waits never yield the main thread, so Hammerspoon
+cannot process the workspace notification). Even so, `AXFrontmost` was observed
+still reading `false` while FCP had already revalidated its menus, so a miss
+there is logged rather than fatal; every step after it has its own proof.
+
+A whole run is ~4–8 s wall clock (measured 4441 ms and 7414 ms on repeat runs
+of a 16-clip project), against a 30 s hard budget: every wait is capped by the
+*remaining* budget, so one wedged step can never outlive the operation. The
+previously frontmost app is captured before anything blocks and reactivated at
+the end (`restored` in the result).
+
+### Gotchas that cost real time here
+
+- **The `hs` CLI's send/receive timeout defaults to FOUR seconds** (`-t sec`).
+  Anything slower than that — every export — loses its client mid-run. Callers
+  must pass `hs -t 45 -c …`.
+- **`hs.ipc` sometimes refuses a request outright** — the console logs
+  `Instance of [UUID] already recursing, refusing request` — and the CLI client
+  then exits at once having executed *nothing*. It is silent on the Lua side.
+  That is what the `running` breadcrumb is for: a client that dies before the
+  breadcrumb lands was refused and the launch should be re-fired; after it, the
+  export owns the clock. Reloading Hammerspoon over `hs -c 'hs.reload()'` and
+  `kill -9`ing in-flight clients both make this more likely.
+- **A modal dialog anywhere in FCP disables the whole File menu.** An open
+  Share/"Export File" dialog reads exactly like "no project is open", so
+  `exportXML` refuses to start when a save panel is already up and says so.
+
 ## Known limitations (accepted for v1)
 
 - **Fuzzy-match fallback**: cells carry their names, so an exact title match is
