@@ -13,7 +13,7 @@ There is no build system, linter, or test suite — two source files, no
 dependencies beyond Hammerspoon and macOS Python 3.
 
 ```bash
-python3 build_catalog.py                          # rebuild catalog.lua (+ catalog.json record)
+python3 build_catalog.py                          # rebuild catalog.lua
 hs -c 'hs.reload()' >/dev/null 2>&1               # reload Hammerspoon after editing fcp_palette.lua
 hs -c 'fcpPalette.refreshCatalog()' >/dev/null 2>&1   # force a catalog rebuild through the palette
 hs -c 'fcpPalette.apply("Video Effect", "Gaussian")' >/dev/null 2>&1   # scripted apply (real project!)

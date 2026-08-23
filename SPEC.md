@@ -324,7 +324,7 @@ prefix rather than typed as a literal.
 
 Writing `/Users/…/AI/fcp/name` into `saveAsNameTextField` sets and **reads back
 cleanly**, and Save is accepted — but NSSavePanel takes the string *literally*
-and writes `:Users:tylerpoelking:content:videos:chappie:AI:fcp:name.fcpxmld`
+and writes `:Users:…:AI:fcp:name.fcpxmld`
 into whatever folder the panel was already showing. Silent junk in the wrong
 place. **Falsified 2026-08-21.** The folder must be set with ⌘⇧G, and the
 `where popup` re-read to prove the panel moved *before* Save is pressed.
