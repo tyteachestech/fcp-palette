@@ -21,6 +21,9 @@ import sys
 
 HOME = os.path.expanduser("~")
 USER_TEMPLATES = os.path.join(HOME, "Movies", "Motion Templates.localized")
+# Every built-in source below assumes the default install location; an FCP
+# installed elsewhere yields a near-empty catalog, so main() warns loudly.
+FCP_APP = "/Applications/Final Cut Pro.app"
 _FXP_RES = (
     "/Applications/Final Cut Pro.app/Contents/PlugIns/MediaProviders/"
     "MotionEffect.fxp/Contents/Resources"
@@ -251,6 +254,10 @@ def scan_effect_bundles(items, seen):
                           "set": m.group(2)})
 
 def main():
+    if not os.path.isdir(FCP_APP):
+        print(f"warning: {FCP_APP} not found — built-in titles, generators and "
+              "effects will be missing from the catalog (the scanner only "
+              "knows the default install location)", file=sys.stderr)
     items, seen = [], set()
     scan_templates(USER_TEMPLATES, items, seen)
     scan_templates(SYSTEM_TEMPLATES, items, seen)

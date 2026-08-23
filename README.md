@@ -25,7 +25,9 @@ list.
 
 - macOS with **Final Cut Pro** — developed and verified against **12.3**
   (English UI: the scanner reads FCP's English strings tables, so other
-  languages will produce wrong names)
+  languages will produce wrong names). FCP must be installed at the default
+  `/Applications/Final Cut Pro.app` — the scanner only looks there for
+  built-in content and warns if it's missing
 - [Hammerspoon](https://www.hammerspoon.org) with **Accessibility** permission
   granted (System Settings → Privacy & Security → Accessibility)
 - Python 3 (ships with macOS; only used to build the catalog)
