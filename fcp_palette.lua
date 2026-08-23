@@ -518,7 +518,10 @@ local function applyConnected(app, choice)
   if not repeatApply then
     changed = waitFor(function() return undoTitle(app) == CONNECT_UNDO end, 3)
   else
-    local la2 = goTo(app, "Timeline", nil, "AXLayoutArea")
+    -- clipsBefore is nil when the pre-apply timeline focus failed, so a repeat
+    -- connect has no baseline count to verify against: treat it as unverified
+    -- (the standard failure notification below) rather than comparing with nil.
+    local la2 = clipsBefore and goTo(app, "Timeline", nil, "AXLayoutArea")
     changed = la2 and waitFor(function()
       return countClips(la2, clipDesc) > clipsBefore
     end, 3)
@@ -765,8 +768,9 @@ local SELECTION_INSET = ui(2)
 -- The chooser still owns row geometry, selection, scrolling and the native
 -- ⌘1–9 badges. Its text is transparent because `rowCanvas` draws the visible
 -- 2x type, thumbnails and edge-to-edge colour without replacing that behavior.
-local NAME_COLOR = { hex = "#F4F4F2", alpha = 0 }
-local META_COLOR = { hex = "#FFFFFF", alpha = 0 }
+-- The chooser's native text is fully transparent (only rowCanvas paints
+-- visible type), so only the alpha here matters.
+local CLEAR_TEXT = { white = 1, alpha = 0 }
 local NEUTRAL    = "#9AA4B2"
 
 local function tintFor(category)
@@ -792,8 +796,15 @@ end
 -- gridline, so they are clipped rather than allowed to break the column.
 local NAME_MAX = 30
 local function clip(name)
-  if #name <= NAME_MAX then return name end
-  return name:sub(1, NAME_MAX - 1) .. "…"
+  local len = utf8.len(name)
+  if not len then                       -- not valid UTF-8: fall back to bytes
+    if #name <= NAME_MAX then return name end
+    return name:sub(1, NAME_MAX - 1) .. "…"
+  end
+  if len <= NAME_MAX then return name end
+  -- Cut on a character boundary: a byte cut through a multibyte name renders
+  -- a replacement glyph. Keeps NAME_MAX - 1 characters plus the ellipsis.
+  return name:sub(1, utf8.offset(name, NAME_MAX) - 1) .. "…"
 end
 
 local function styledRow(name, category, set)
@@ -806,11 +817,11 @@ local function styledRow(name, category, set)
                                     color = color, backgroundColor = band,
                                     paragraphStyle = para })
   end
-  local nameRun = run(clip(name), NAME_FONT_SIZE, NAME_COLOR)
-  local metaRun = run("\t" .. metaFor(category, set), META_FONT_SIZE, META_COLOR)
+  local nameRun = run(clip(name), NAME_FONT_SIZE, CLEAR_TEXT)
+  local metaRun = run("\t" .. metaFor(category, set), META_FONT_SIZE, CLEAR_TEXT)
   -- Keep the native line wide enough to preserve the chooser's measured row
   -- geometry; the visible wash itself is painted by rowCanvas.
-  local padRun  = run(string.rep(" ", 900), NAME_FONT_SIZE, NAME_COLOR)
+  local padRun  = run(string.rep(" ", 900), NAME_FONT_SIZE, CLEAR_TEXT)
   if M.config.compactRows then
     return nameRun .. metaRun .. padRun, nil
   end
@@ -1026,8 +1037,16 @@ local function applyChoice(choice)
     rawSearch(app, choice.fallback, choice.query)
     return
   end
+  local cat = CATEGORIES[choice.category]
+  if not cat then
+    -- M.apply() is a public entry point, so an unsupported category must fail
+    -- loud rather than raise an uncaught error with no notification.
+    notify("Unsupported category “" .. tostring(choice.category)
+      .. "” — expected Title, Generator, Video Effect, Audio Effect or Effect Preset.")
+    return
+  end
   local ok
-  if CATEGORIES[choice.category].browser == "sidebar" then
+  if cat.browser == "sidebar" then
     ok = applyConnected(app, choice)
   else
     ok = applyEffect(app, choice)
@@ -1115,9 +1134,19 @@ local function refreshRowCanvas()
   local scrollEl = win and findFirst(win, function(e)
     return attr(e, "AXRole") == "AXScrollArea"
   end, 5, 120)
-  local rows = tableEl and (attr(tableEl, "AXRows") or attr(tableEl, "AXChildren")) or {}
+  -- The AXChildren fallback can include non-row children; keep only real rows
+  -- so row i still pairs with currentChoices[i].
+  local rows = {}
+  for _, r in ipairs(tableEl and (attr(tableEl, "AXRows") or attr(tableEl, "AXChildren")) or {}) do
+    if attr(r, "AXRole") == "AXRow" then rows[#rows + 1] = r end
+  end
   local viewport = scrollEl and attr(scrollEl, "AXFrame")
   if not fr or not viewport or #rows == 0 then return end
+  -- Index pairing is the whole contract: if the table doesn't hold exactly one
+  -- row per choice (mid-refilter, unexpected children), painting would show a
+  -- name that mismatches what Return applies. Skip this pass; the 0.12 s timer
+  -- repaints once they agree.
+  if #rows ~= #currentChoices then return end
 
   local viewportTop = math.max(fr.y, viewport.y)
   local viewportBottom = math.min(fr.y + fr.h, viewport.y + viewport.h)
@@ -1185,7 +1214,7 @@ local function refreshRowCanvas()
     rowCanvas[n] = { type = "text", text = c.displayName or "",
       textFont = UI_FONT, textSize = NAME_FONT_SIZE,
       textLineBreak = "truncateTail",
-      textColor = NAME_COLOR.alpha == 0 and { hex = "#F4F4F2" } or NAME_COLOR,
+      textColor = { hex = "#F4F4F2" },
       frame = centeredTextFrame(nameX, metaX - nameX - COLUMN_GAP,
                                 y, h, NAME_FONT_SIZE) }
     n = n + 1
