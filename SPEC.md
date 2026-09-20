@@ -455,11 +455,14 @@ The caller should first export a source XML baseline for later freshness checks.
 Native snapshots change some effect-internal IDs; source-vs-snapshot byte or
 effect-data comparison is not a valid freshness test.
 
-Validation status: native snapshot/XML/restore and a full-resolution H.264
-single-pass video export succeeded independently. Repeated full capture testing
-also encountered Final Cut UI stalls and a browser-focus failure; the latter has
-been corrected in code, with a complete repeat still pending. Treat the bridge
-as experimental until the complete sequence passes on the target host.
+Validation status (2026-09-19): the complete source XML → snapshot → snapshot
+XML → share → restore sequence passed on Final Cut Pro 12.3, with independent
+full-file video/audio decoding and source freshness validation. The 101-second
+2160 × 3840 29.97 fps SDR project required 86 seconds of UI control; export
+finished 231 seconds after queueing. The earlier browser-focus failure was
+corrected by explicitly focusing the snapshot row. Earlier UI stalls also
+occurred, so do not infer guaranteed reliability or latency from one complete
+pass. The caller must stop on an unresponsive app and inspect receipts.
 
 References: Apple's [export guide](https://support.apple.com/en-au/guide/final-cut-pro/ver0192a47b8/mac)
 and [snapshot guide](https://support.apple.com/en-euro/guide/final-cut-pro/verfd45ffa45/12.0/mac/15.6).
