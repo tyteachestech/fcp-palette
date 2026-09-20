@@ -8,7 +8,8 @@ sidebar or a browser search field.
 
 It's a small, self-contained replacement for the part of
 [CommandPost](https://commandpost.io) most people actually use — the Search
-Console. One Lua file, one Python scanner, no app to install.
+Console. A Lua palette, a Python scanner, and an optional reference-export
+bridge; no separate app to install.
 
 <!-- TODO: demo.gif — ⇧Space, type "gauss", Return, effect lands on the clip -->
 
@@ -177,3 +178,12 @@ thing.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Reference capture bridge
+
+`fcp_capture.lua` is an optional, on-demand integration for native project
+snapshots, XML export, and the **AI Reference** share destination. It requires
+the palette to be loaded as `fcpPalette`. It is not a standalone batch exporter: a
+caller must supply unique request/result paths, serialize UI work, validate the
+finished media, and manage freshness. Read [SPEC.md](SPEC.md#reference-capture)
+for the contract and current test limits.

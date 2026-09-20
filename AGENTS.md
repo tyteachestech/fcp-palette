@@ -9,7 +9,7 @@ catalogs). Don't re-derive those.
 
 ## Commands
 
-There is no build system, linter, or test suite — two source files, no
+There is no build system, linter, or test suite — three source files, no
 dependencies beyond Hammerspoon and macOS Python 3.
 
 ```bash
@@ -31,7 +31,7 @@ below; every applied item must be cleaned up and the cleanup verified.
 
 ## Architecture
 
-Two source files, one direction of data flow:
+Source files:
 
 - **`build_catalog.py`** — scans installed content on disk (Motion template
   roots, FCP bundle strings/presets, Audio Units via `auval`, saved effect
@@ -44,6 +44,9 @@ Two source files, one direction of data flow:
   focus-the-browser-search → verified-type the exact name → wait for the grid
   to settle (`waitForCell`) → click the cell whose `AXTitle` matches →
   post-apply verification.
+- **`fcp_capture.lua`** — optional on-demand native snapshot and reference-share
+  bridge. Read SPEC's "Reference capture" before changing it. It does not
+  validate finished media or make export-completion claims; the caller owns that.
 - Runtime state next to the module, all git-ignored: `catalog.lua` (the
   index), `frecency.json` (usage ranking), `missing.json` (tombstones for
   items a verified search couldn't find; cleared by

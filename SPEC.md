@@ -415,3 +415,51 @@ the end (`restored` in the result).
   extra media" modal guard (an unguarded modal hangs the AX sequence). The scan
   re-adds `"Transitions"` to `build_catalog.py`'s `CATEGORY_MAP` when it lands;
   until then those rows are not built (the palette filtered them out anyway).
+
+## Reference capture
+
+`fcp_capture.lua` is loaded on demand via `dofile(path).run(action, options)`.
+It shares the palette's existing `exportXML` helper but adds no startup hooks.
+Each call needs an absolute, unique `resultFile`; it writes an atomic receipt
+with `ok`, `operation`, and elapsed `ms`. Read the receipt rather than relying on
+the IPC response. Never retry an ambiguous mutating call automatically.
+
+Operations: `exportSourceXML` records the currently open project, `snapshot`
+uses Reveal Project in Browser / Snapshot Project / Open Clip, `exportXML`
+exports that snapshot, `share` queues its whole timeline, and `restore` returns
+through timeline history. `inspect` and `background` are bounded diagnostics.
+The caller supplies `destination`, the returned `source_project` and
+`snapshot_project`, and `sequence.width`/`height` for share.
+
+Create a destination named **AI Reference** using Export File, **Computer**,
+**H.264 Single-pass (Faster)**, maximum resolution, **Save only**, chapter markers
+off. Share verifies the live destination, exact project dimensions, SDR Rec.709,
+and MP4. It does not change the default destination. Segmentation is enabled
+only if available; it was absent on the tested M4 Pro. Queue success is not
+completion: the caller must check dimensions, frame rate, duration, audio, color,
+and complete decoding. XML and video must come from the same snapshot.
+
+AX details verified on English Final Cut Pro 12.3:
+- Ignore nonmodal screen-sharing windows. Use AXModal or an AXSheet.
+- Prune AXLayoutArea, AXOutline, AXTable, AXGrid and inspector subtrees during
+  control lookup; large timeline walks can stall.
+- Browser selection alone does not target Open Clip: focus the freshly read
+  snapshot row first, or it may open a selected timeline compound.
+- Settings label siblings expose format/codec/resolution/action popups.
+- Clear selected ranges before sharing. Use the save panel's Go To Folder,
+  verify its destination folder, then set the filename.
+- Save retains snapshots. It never deletes projects or accepts unexpected
+  missing-media/proxy warnings. Failure receipts preserve partial snapshot names.
+
+The caller should first export a source XML baseline for later freshness checks.
+Native snapshots change some effect-internal IDs; source-vs-snapshot byte or
+effect-data comparison is not a valid freshness test.
+
+Validation status: native snapshot/XML/restore and a full-resolution H.264
+single-pass video export succeeded independently. Repeated full capture testing
+also encountered Final Cut UI stalls and a browser-focus failure; the latter has
+been corrected in code, with a complete repeat still pending. Treat the bridge
+as experimental until the complete sequence passes on the target host.
+
+References: Apple's [export guide](https://support.apple.com/en-au/guide/final-cut-pro/ver0192a47b8/mac)
+and [snapshot guide](https://support.apple.com/en-euro/guide/final-cut-pro/verfd45ffa45/12.0/mac/15.6).
