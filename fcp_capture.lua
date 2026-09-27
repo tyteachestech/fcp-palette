@@ -80,7 +80,7 @@ function M.snapshot(opts)
  local snapshot=wait(function()
   local ok,n=pcall(selectedName,root)
   return ok and n and n~=source and n:sub(1,#source)==source and n
- end,12,'new snapshot selection')
+ end,30,'new snapshot selection')
  opts._snapshot=snapshot;opts._source=source;opts._restoreFilmstrip=changedView
  -- Open the browser project explicitly. `Open Clip` can otherwise act on
  -- a selected timeline compound even while a browser project is selected.
