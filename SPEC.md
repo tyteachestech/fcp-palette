@@ -329,6 +329,20 @@ into whatever folder the panel was already showing. Silent junk in the wrong
 place. **Falsified 2026-08-21.** The folder must be set with ⌘⇧G, and the
 `where popup` re-read to prove the panel moved *before* Save is pressed.
 
+### Exact-folder proof (added 2026-09-29, pending live check on 12.4)
+
+The `where popup` shows only a basename, and every video exports into a
+folder named `fcp`, so a basename match cannot tell this video's `AI/fcp` from
+the last one Final Cut saved to. `M.goToSaveFolder` (shared by Export XML and
+capture's Share) therefore requires, before Return, a Go To Folder suggestion
+whose `AXIdentifier` is the full path (as typed or symlink-resolved), sending
+`AXConfirm` to the path field only if the suggestion does not appear on its
+own; after Return it requires the Where popup to name the folder. AX strings
+are compared after stripping bidi marks (U+2066–2069, U+200E, U+200F).
+Mechanism taken from editor-cli's `selectSaveDirectory` (Creator Studio 12.3).
+A disabled menu or missing panel with another app focused is reported as
+"Final Cut lost focus", and export results carry `fcp_version`.
+
 ### FCP 12.x writes a package, progressively
 
 The export is a **`.fcpxmld` package** — a folder holding `Info.fcpxml` — at

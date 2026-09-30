@@ -29,9 +29,18 @@ local function id(root,value) return find(root,function(e) return a(e,'AXIdentif
 local function desc(root,value) return find(root,function(e) return a(e,'AXDescription')==value end) end
 local function title(root,value) return find(root,function(e) return a(e,'AXTitle')==value or a(e,'AXValue')==value end) end
 local function press(e) assert(e,'Required Final Cut control is missing'); e:performAction('AXPress') end
+-- A disabled menu usually means focus went elsewhere mid-sequence; say so
+-- rather than reporting a bare timeout.
 local function menu(app,path)
- wait(function() local item=app:findMenuItem(path);return item and item.enabled end,5,'menu '..table.concat(path,' > '))
- if not app:selectMenuItem(path) then error('Final Cut menu unavailable: '..table.concat(path,' > '),0) end
+ local label=table.concat(path,' > ')
+ local ok,err=pcall(wait,function() local item=app:findMenuItem(path);return item and item.enabled end,5,'menu '..label)
+ if not ok then
+  local lost=fcpPalette.focusLost(app)
+  error(lost and (lost..' while waiting for menu '..label) or err,0)
+ end
+ if not app:selectMenuItem(path) then
+  error((fcpPalette.focusLost(app) or 'Final Cut menu unavailable')..': '..label,0)
+ end
 end
 local function context()
  local app=assert(hs.application.find('com.apple.FinalCut',true),'Final Cut Pro is not running')
@@ -177,15 +186,14 @@ function M.share(opts)
    if id(win,'saveAsNameTextField') then return win end
   end
  end)
+ -- Same exact-folder proof as Export XML (full-path suggestion, then the
+ -- bidi-stripped Where popup), shared from the palette.
  local dir=opts.destination:match('^(.*)/[^/]+$')
- hs.eventtap.keyStroke({'cmd','shift'},'g')
- local field=wait(function() return id(panel,'PathTextField') end)
- field:setAttributeValue('AXFocused',true);field:setAttributeValue('AXValue',dir..'/')
- wait(function() return a(field,'AXValue')==dir..'/' end)
- hs.eventtap.keyStroke({},'return')
- wait(function() return not id(panel,'GoToWindow') end)
- local where=id(panel,'where popup')
- wait(function() return a(where,'AXValue')==dir:match('([^/]+)$') end)
+ fcpPalette.goToSaveFolder(panel,dir,function(cap)
+  local rem=(operationDeadline or math.huge)-hs.timer.secondsSinceEpoch()
+  if rem<=0 then error('Capture UI deadline exceeded',0) end
+  return math.min(rem,cap or rem)
+ end)
  local name=id(panel,'saveAsNameTextField');name:setAttributeValue('AXValue',opts.destination:match('([^/]+)$'))
  wait(function() return a(name,'AXValue')==opts.destination:match('([^/]+)$') end)
  press(id(panel,'OKButton'))

@@ -1333,6 +1333,106 @@ local function focusedApp()
   return (pid and hs.application.applicationForPID(pid))
       or hs.application.frontmostApplication()
 end
+M.focusedApp = focusedApp
+
+-- When a menu or panel wait fails, name a lost focus instead of guessing at a
+-- missing project: a click in another app mid-sequence disables FCP's menus
+-- exactly the way "no project open" does. Returns nil while FCP still has it.
+function M.focusLost(app)
+  local f = focusedApp()
+  if app and f and f:pid() ~= app:pid() then
+    return "Final Cut lost focus (" .. tostring(f:name() or "another app") .. " is frontmost)"
+  end
+end
+
+-- The installed Final Cut's CFBundleShortVersionString, recorded in export
+-- results so a behaviour change can be traced to an update (config/fcp.json in
+-- the content workspace holds the last live-verified version).
+function M.fcpVersion()
+  local app  = fcp()
+  local path = app and app:path()
+  local info = path and hs.plist.read(path .. "/Contents/Info.plist")
+  return info and info.CFBundleShortVersionString
+end
+
+-- AX display strings can arrive wrapped in bidirectional marks (U+2066–2069
+-- isolates, U+200E/U+200F), which break a plain equality test. Strip them and
+-- surrounding whitespace before comparing.
+local BIDI_MARKS = { "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}", "\u{200E}", "\u{200F}" }
+function M.plainText(s)
+  if type(s) ~= "string" then return s end
+  for _, m in ipairs(BIDI_MARKS) do s = s:gsub(m, "") end   -- no pattern magic in these bytes
+  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Point an open save panel at EXACTLY `dir`, and prove it got there, before
+-- the caller presses Save. The Where popup only shows a basename, and every
+-- video exports into a folder named `fcp`, so "Where reads fcp" cannot tell
+-- this video's AI/fcp from the last one Final Cut saved to. If Return lands
+-- before the typed path registers, the panel stays put and Save writes into
+-- another video's folder. So the proof has two parts:
+--   1. before Return, the Go To Folder sheet lists a suggestion whose
+--      AXIdentifier is the full path (as typed, or symlink-resolved: videos/
+--      lives on the SSD), i.e. the sheet parsed THIS path;
+--   2. after Return, the sheet is gone and the Where popup (bidi marks
+--      stripped) names the folder.
+-- Mechanism borrowed from editor-cli's selectSaveDirectory (12.3, macOS 26),
+-- which also sends AXConfirm before looking for the suggestion; that is only
+-- tried here if the suggestion doesn't appear on its own.
+-- `left(cap)` returns the remaining budget capped at `cap`, erroring when spent.
+function M.goToSaveFolder(panel, dir, left)
+  dir = dir:gsub("/+$", "")
+  local want = { [dir] = true, [dir .. "/"] = true }
+  local real = hs.fs.pathToAbsolute(dir)
+  if real then want[real] = true; want[real:gsub("/+$", "") .. "/"] = true end
+
+  hs.eventtap.keyStroke({ "cmd", "shift" }, "g")
+  local pathField = waitFor(function()
+    return axById(panel, "PathTextField", 3)
+  end, left(6), 0.05)
+  if not pathField then
+    error("⌘⇧G didn't open the save panel's Go To Folder sheet", 0)
+  end
+  pathField:setAttributeValue("AXFocused", true)
+  sleep(0.15)
+  pathField:setAttributeValue("AXValue", dir .. "/")
+  if not waitFor(function() return attr(pathField, "AXValue") == dir .. "/" end,
+                 left(2), 0.05) then
+    error("couldn't set the Go To Folder path (it reads “" ..
+          tostring(attr(pathField, "AXValue")) .. "”)", 0)
+  end
+
+  local function suggestion()
+    local sheet = axById(panel, "GoToWindow", 3) or panel
+    return findFirst(sheet, function(e)
+      return want[attr(e, "AXIdentifier") or ""] == true
+    end, 8, 400)
+  end
+  if not waitFor(suggestion, left(1.5), 0.1) then
+    pcall(function() pathField:performAction("AXConfirm") end)
+    if not waitFor(suggestion, left(3), 0.1) then
+      error("the Go To Folder sheet never offered " .. dir ..
+            " as an exact suggestion — refusing to navigate on a basename guess", 0)
+    end
+  end
+
+  pathField:setAttributeValue("AXFocused", true)
+  hs.eventtap.keyStroke({}, "return")
+  if not waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end,
+                 left(5), 0.05) then
+    error("the Go To Folder sheet wouldn't accept " .. dir, 0)
+  end
+
+  local wantFolder = dir:match("([^/]+)$")
+  local wherePop = axById(panel, "where popup", 3)
+  if not waitFor(function()
+        return M.plainText(attr(wherePop, "AXValue")) == wantFolder
+      end, left(3), 0.05) then
+    error(string.format("the save panel is in “%s”, not “%s” — refusing to Save",
+                        tostring(M.plainText(attr(wherePop, "AXValue"))),
+                        tostring(wantFolder)), 0)
+  end
+end
 
 -- FCP's Export XML save panel, wherever this build hangs it (app-level dialog
 -- on 12.3; the main-window sheet lookup is the defensive fallback).
@@ -1418,20 +1518,20 @@ local function exportXMLRun(dest, t0, budget)
         local it = exportItem()
         return it and attr(it, "AXEnabled") == true
       end, left(8), 0.1) then
-    error("Final Cut reports “" .. menuTitle ..
-          "” disabled — is a project open in the timeline?", 0)
+    error(M.focusLost(app) or ("Final Cut reports “" .. menuTitle ..
+          "” disabled — is a project open in the timeline?"), 0)
   end
   dbg("exportXML: " .. menuTitle .. " enabled")
 
   if not app:selectMenuItem({ "File", menuTitle }) then
-    error("File → " .. menuTitle ..
-          " wouldn't select — is a project open in the timeline?", 0)
+    error(M.focusLost(app) or ("File → " .. menuTitle ..
+          " wouldn't select — is a project open in the timeline?"), 0)
   end
 
   local panel = waitFor(function() return exportPanel(axapp) end, left(10), 0.05)
   if not panel then
-    error("File → " .. menuTitle ..
-          " opened no save panel — is a project open in the timeline?", 0)
+    error(M.focusLost(app) or ("File → " .. menuTitle ..
+          " opened no save panel — is a project open in the timeline?"), 0)
   end
   dbg("exportXML: save panel up")
 
@@ -1447,38 +1547,10 @@ local function exportXMLRun(dest, t0, budget)
   dbg("exportXML: project=" .. tostring(project))
 
   -- Folder: ⌘⇧G, because a path typed into the name field is taken literally.
+  -- goToSaveFolder proves the panel reached this exact folder (not merely one
+  -- with the same basename) before Save is pressed.
   local dir = dest:match("^(.*)/[^/]+$")
-  hs.eventtap.keyStroke({ "cmd", "shift" }, "g")
-  local pathField = waitFor(function()
-    return axById(panel, "PathTextField", 3)
-  end, left(6), 0.05)
-  if not pathField then
-    error("⌘⇧G didn't open the save panel's Go To Folder sheet", 0)
-  end
-  pathField:setAttributeValue("AXFocused", true)
-  sleep(0.15)
-  pathField:setAttributeValue("AXValue", dir .. "/")
-  if not waitFor(function() return attr(pathField, "AXValue") == dir .. "/" end,
-                 left(2), 0.05) then
-    error("couldn't set the Go To Folder path (it reads “" ..
-          tostring(attr(pathField, "AXValue")) .. "”)", 0)
-  end
-  hs.eventtap.keyStroke({}, "return")
-  if not waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end,
-                 left(5), 0.05) then
-    error("the Go To Folder sheet wouldn't accept " .. dir, 0)
-  end
-
-  -- Prove the panel really moved before pressing Save: a Save into the wrong
-  -- folder is exactly the silent-junk failure this whole detour exists to stop.
-  local wantFolder = dir:match("([^/]+)$")
-  local wherePop = axById(panel, "where popup", 3)
-  if not waitFor(function() return attr(wherePop, "AXValue") == wantFolder end,
-                 left(3), 0.05) then
-    error(string.format("the save panel is in “%s”, not “%s” — refusing to Save",
-                        tostring(attr(wherePop, "AXValue")),
-                        tostring(wantFolder)), 0)
-  end
+  M.goToSaveFolder(panel, dir, left)
   dbg("exportXML: navigated to " .. dir)
 
   -- Filename: no extension — FCP appends the one it is writing.
@@ -1621,6 +1693,7 @@ function M.exportXML(path, opts)
                project = res.project, bytes = res.bytes,
                restored = restored, ms = ms }
   end
+  result.fcp_version = M.fcpVersion()
   writeJSON(resultFile, result)
   return result
 end
