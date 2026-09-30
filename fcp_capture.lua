@@ -162,6 +162,26 @@ function M.share(opts)
  if settings.format~='Computer' or settings.codec~='H.264 Single-pass (Faster)' or settings.action~='Save only' then
   error('AI Reference preset changed; expected Computer / H.264 Single-pass (Faster) / Save only',0)
  end
+ -- 12.4 opens the destination at a smaller default for tall canvases (a 9:16
+ -- 2160 x 3840 project shows 1080 x 1920). Pick the exact canvas when the
+ -- popup offers it, for this share only; the exact-size check below still
+ -- refuses anything else, so the reference never scales.
+ if settings.resolution~=want then
+  local pop=popupAfterLabel(w,'Resolution:')
+  press(pop)
+  local ok=pcall(function()
+   press(wait(function()
+    return find(pop,function(e) return a(e,'AXRole')=='AXMenuItem' and a(e,'AXTitle')==want end,4,true)
+   end,3,'resolution '..want))
+   wait(function() return a(pop,'AXValue')==want end,3,'resolution '..want)
+  end)
+  if not ok then
+   if find(pop,function(e) return a(e,'AXRole')=='AXMenu' end,2,true) then hs.eventtap.keyStroke({},'escape') end
+   error('AI Reference offers no exact '..want..' resolution (it reads '..tostring(a(pop,'AXValue'))..')',0)
+  end
+  settings.resolution_default=settings.resolution
+  settings.resolution=want
+ end
  if settings.resolution~=want or a(desc(w,'video dimensions'),'AXValue')~=want then
   error('AI Reference resolution is not the exact timeline canvas: '..tostring(settings.resolution),0)
  end

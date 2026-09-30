@@ -1380,7 +1380,7 @@ end
 -- which also sends AXConfirm before looking for the suggestion; that is only
 -- tried here if the suggestion doesn't appear on its own.
 -- `left(cap)` returns the remaining budget capped at `cap`, erroring when spent.
-function M.goToSaveFolder(panel, dir, left)
+local function goToSaveFolderOnce(panel, dir, left)
   dir = dir:gsub("/+$", "")
   local want = { [dir] = true, [dir .. "/"] = true }
   local real = hs.fs.pathToAbsolute(dir)
@@ -1432,6 +1432,26 @@ function M.goToSaveFolder(panel, dir, left)
                         tostring(M.plainText(attr(wherePop, "AXValue"))),
                         tostring(wantFolder)), 0)
   end
+end
+
+-- The Go To step failed on its first try a few times on 12.4 (2026-09-29) and
+-- worked on a retry. Nothing is written until Save, so one bounded retry is
+-- safe: close a Go To sheet left open (its own Cancel, never the save panel's)
+-- and navigate again. The proof inside is unchanged.
+function M.goToSaveFolder(panel, dir, left)
+  local ok, err = pcall(goToSaveFolderOnce, panel, dir, left)
+  if ok then return end
+  dbg("goToSaveFolder: first try failed (" .. tostring(err) .. "), retrying once")
+  local sheet = axById(panel, "GoToWindow", 3)
+  if sheet then
+    local cancel = findFirst(sheet, function(e)
+      return attr(e, "AXRole") == "AXButton" and attr(e, "AXTitle") == "Cancel"
+    end, 4, 100)
+    if cancel then cancel:performAction("AXPress") else hs.eventtap.keyStroke({}, "escape") end
+    waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end, left(2), 0.05)
+  end
+  sleep(0.3)
+  goToSaveFolderOnce(panel, dir, left)
 end
 
 -- FCP's Export XML save panel, wherever this build hangs it (app-level dialog
