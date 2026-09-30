@@ -343,6 +343,17 @@ Mechanism taken from editor-cli's `selectSaveDirectory` (Creator Studio 12.3).
 A disabled menu or missing panel with another app focused is reported as
 "Final Cut lost focus", and export results carry `fcp_version`.
 
+Live on 12.4 (2026-09-29): the suggestion is an `AXList` whose `AXIdentifier`
+is the full folder path, inside the `GoToWindow` sheet's table. The Go To step
+failed intermittently on the export right after capture's snapshot, retry
+included, because the panel element grabbed as it appeared had gone stale (the
+panel was rebuilding, opening expanded). `goToSaveFolder` therefore takes a
+panel getter and re-reads it on every lookup, focuses the panel's name field
+first, sends ⌘⇧G with the modifiers as separate key events, and retries once.
+Capture's Share selects the exact canvas from the Resolution popup: 12.4 opens
+AI Reference at 1080 × 1920 for a 2160 × 3840 project. 16:9 and 9:16 captures,
+capture-status, and capture-check all passed after these fixes.
+
 ### FCP 12.x writes a package, progressively
 
 The export is a **`.fcpxmld` package** — a folder holding `Info.fcpxml` — at

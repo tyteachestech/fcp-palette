@@ -182,8 +182,11 @@ function M.share(opts)
   settings.resolution_default=settings.resolution
   settings.resolution=want
  end
- if settings.resolution~=want or a(desc(w,'video dimensions'),'AXValue')~=want then
-  error('AI Reference resolution is not the exact timeline canvas: '..tostring(settings.resolution),0)
+ -- The summary's dimensions field refreshes a beat after a resolution change.
+ local dims=function() return a(desc(w,'video dimensions'),'AXValue') end
+ pcall(wait,function() return dims()==want end,3,'video dimensions')
+ if settings.resolution~=want or dims()~=want then
+  error('AI Reference resolution is not the exact timeline canvas '..want..': popup '..tostring(settings.resolution)..', output '..tostring(dims()),0)
  end
  if not title(w,'Standard - Rec. 709 (1-1-1)') then
   error('This preset is verified for SDR Rec.709 only; refusing an unverified color conversion',0)
@@ -201,19 +204,21 @@ function M.share(opts)
  settings.fps=a(desc(w,'video frame rate'),'AXValue')
  settings.dimensions=want
  press(title(w,'Next…'))
- local panel=wait(function()
+ local function savePanel()
   for _,win in ipairs(a(root,'AXWindows') or {}) do
    if id(win,'saveAsNameTextField') then return win end
   end
- end)
+ end
+ local panel=wait(savePanel)
  -- Same exact-folder proof as Export XML (full-path suggestion, then the
  -- bidi-stripped Where popup), shared from the palette.
  local dir=opts.destination:match('^(.*)/[^/]+$')
- fcpPalette.goToSaveFolder(panel,dir,function(cap)
+ fcpPalette.goToSaveFolder(savePanel,dir,function(cap)
   local rem=(operationDeadline or math.huge)-hs.timer.secondsSinceEpoch()
   if rem<=0 then error('Capture UI deadline exceeded',0) end
   return math.min(rem,cap or rem)
  end)
+ panel=savePanel() or panel
  local name=id(panel,'saveAsNameTextField');name:setAttributeValue('AXValue',opts.destination:match('([^/]+)$'))
  wait(function() return a(name,'AXValue')==opts.destination:match('([^/]+)$') end)
  press(id(panel,'OKButton'))

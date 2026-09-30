@@ -1380,17 +1380,47 @@ end
 -- which also sends AXConfirm before looking for the suggestion; that is only
 -- tried here if the suggestion doesn't appear on its own.
 -- `left(cap)` returns the remaining budget capped at `cap`, erroring when spent.
-local function goToSaveFolderOnce(panel, dir, left)
+-- ⌘⇧G with the modifiers pressed as their own key events. Final Cut can ignore
+-- a chord carried only in the flags field (editor-cli's finding), which is what
+-- hs.eventtap.keyStroke posts; live on 12.4 (2026-09-29) the flags-only chord
+-- missed the Go To sheet right after capture's snapshot step.
+local function goToFolderChord()
+  local ev = hs.eventtap.event
+  for _, k in ipairs({ { "cmd", true, { cmd = true } }, { "shift", true, { cmd = true, shift = true } },
+                       { "g", true, { cmd = true, shift = true } }, { "g", false, { cmd = true, shift = true } },
+                       { "shift", false, { cmd = true } }, { "cmd", false, {} } }) do
+    ev.newKeyEvent(k[1], k[2]):setFlags(k[3]):post()
+    sleep(0.02)
+  end
+end
+
+local function goToSaveFolderOnce(panelRef, dir, left)
+  -- Re-read the panel on every lookup: an element grabbed the moment the panel
+  -- appeared can go stale while it finishes building (seen live on 12.4 after
+  -- a snapshot, when the panel opened expanded), and a stale root never shows
+  -- the Go To sheet at all.
+  local function P() if type(panelRef) == "function" then return panelRef() end return panelRef end
   dir = dir:gsub("/+$", "")
   local want = { [dir] = true, [dir .. "/"] = true }
   local real = hs.fs.pathToAbsolute(dir)
   if real then want[real] = true; want[real:gsub("/+$", "") .. "/"] = true end
 
-  hs.eventtap.keyStroke({ "cmd", "shift" }, "g")
+  -- Make the panel's own field key first, so the chord reaches the panel.
+  local nameField = axById(P(), "saveAsNameTextField", 3)
+  if nameField then nameField:setAttributeValue("AXFocused", true); sleep(0.15) end
+  goToFolderChord()
   local pathField = waitFor(function()
-    return axById(panel, "PathTextField", 3)
+    return axById(P(), "PathTextField", 3)
   end, left(6), 0.05)
   if not pathField then
+    if M.config.debug then
+      local kids = {}
+      for _, c in ipairs(attr(P(), "AXChildren") or {}) do kids[#kids + 1] = tostring(attr(c, "AXRole")) .. ":" .. tostring(attr(c, "AXIdentifier")) end
+      local fa = focusedApp()
+      local fe = attr(ax.systemWideElement(), "AXFocusedUIElement")
+      dbg("goToSaveFolder: no sheet; panel=" .. tostring(P() ~= nil) .. " kids=" .. table.concat(kids, ",") ..
+          " focusedApp=" .. tostring(fa and fa:bundleID()) .. " focused=" .. tostring(attr(fe, "AXRole")) .. ":" .. tostring(attr(fe, "AXIdentifier")))
+    end
     error("⌘⇧G didn't open the save panel's Go To Folder sheet", 0)
   end
   pathField:setAttributeValue("AXFocused", true)
@@ -1403,7 +1433,7 @@ local function goToSaveFolderOnce(panel, dir, left)
   end
 
   local function suggestion()
-    local sheet = axById(panel, "GoToWindow", 3) or panel
+    local sheet = axById(P(), "GoToWindow", 3) or P()
     return findFirst(sheet, function(e)
       return want[attr(e, "AXIdentifier") or ""] == true
     end, 8, 400)
@@ -1418,13 +1448,13 @@ local function goToSaveFolderOnce(panel, dir, left)
 
   pathField:setAttributeValue("AXFocused", true)
   hs.eventtap.keyStroke({}, "return")
-  if not waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end,
+  if not waitFor(function() return axById(P(), "GoToWindow", 2, 60) == nil end,
                  left(5), 0.05) then
     error("the Go To Folder sheet wouldn't accept " .. dir, 0)
   end
 
   local wantFolder = dir:match("([^/]+)$")
-  local wherePop = axById(panel, "where popup", 3)
+  local wherePop = axById(P(), "where popup", 3)
   if not waitFor(function()
         return M.plainText(attr(wherePop, "AXValue")) == wantFolder
       end, left(3), 0.05) then
@@ -1438,20 +1468,21 @@ end
 -- worked on a retry. Nothing is written until Save, so one bounded retry is
 -- safe: close a Go To sheet left open (its own Cancel, never the save panel's)
 -- and navigate again. The proof inside is unchanged.
-function M.goToSaveFolder(panel, dir, left)
-  local ok, err = pcall(goToSaveFolderOnce, panel, dir, left)
+function M.goToSaveFolder(panelRef, dir, left)
+  local ok, err = pcall(goToSaveFolderOnce, panelRef, dir, left)
   if ok then return end
   dbg("goToSaveFolder: first try failed (" .. tostring(err) .. "), retrying once")
-  local sheet = axById(panel, "GoToWindow", 3)
+  local function P() if type(panelRef) == "function" then return panelRef() end return panelRef end
+  local sheet = axById(P(), "GoToWindow", 3)
   if sheet then
     local cancel = findFirst(sheet, function(e)
       return attr(e, "AXRole") == "AXButton" and attr(e, "AXTitle") == "Cancel"
     end, 4, 100)
     if cancel then cancel:performAction("AXPress") else hs.eventtap.keyStroke({}, "escape") end
-    waitFor(function() return axById(panel, "GoToWindow", 2, 60) == nil end, left(2), 0.05)
+    waitFor(function() return axById(P(), "GoToWindow", 2, 60) == nil end, left(2), 0.05)
   end
   sleep(0.3)
-  goToSaveFolderOnce(panel, dir, left)
+  goToSaveFolderOnce(panelRef, dir, left)
 end
 
 -- FCP's Export XML save panel, wherever this build hangs it (app-level dialog
@@ -1570,7 +1601,10 @@ local function exportXMLRun(dest, t0, budget)
   -- goToSaveFolder proves the panel reached this exact folder (not merely one
   -- with the same basename) before Save is pressed.
   local dir = dest:match("^(.*)/[^/]+$")
-  M.goToSaveFolder(panel, dir, left)
+  M.goToSaveFolder(function() return exportPanel(axapp) end, dir, left)
+  -- The panel may have been rebuilt; work on the live one from here on.
+  panel = exportPanel(axapp) or panel
+  nameField = axById(panel, "saveAsNameTextField", 3) or nameField
   dbg("exportXML: navigated to " .. dir)
 
   -- Filename: no extension — FCP appends the one it is writing.
@@ -1706,7 +1740,9 @@ function M.exportXML(path, opts)
   local result
   if err then
     dbg("exportXML FAILED: " .. err)
-    notify("FCPXML export failed: " .. err)
+    -- Never let the notification mask the real error (an hs.ipc print failure
+    -- here once replaced it and left the result file at "running").
+    pcall(notify, "FCPXML export failed: " .. err)
     result = { ok = false, error = err, restored = restored, ms = ms }
   else
     result = { ok = true, path = res.path, bundle = res.bundle,
