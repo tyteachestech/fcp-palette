@@ -4,8 +4,12 @@
 local M = {}
 local ax = hs.axuielement
 local operationDeadline
+-- The last step reached, named in deadline errors and failure receipts.
+local step
+local function mark(s) step=s end
+local function overdue() error('Capture UI deadline exceeded'..(step and (' at step '..step) or ''),0) end
 local function a(e,k)
- if operationDeadline and hs.timer.secondsSinceEpoch()>operationDeadline then error('Capture UI deadline exceeded',0) end
+ if operationDeadline and hs.timer.secondsSinceEpoch()>operationDeadline then overdue() end
  if not e then return nil end
  e:setTimeout(2)
  return e:attributeValue(k)
@@ -67,6 +71,36 @@ local function dialog(root)
   if sheet then return sheet end
  end
 end
+local function refuseDialog(root,todo)
+ local w=dialog(root)
+ if not w then return end
+ local t=a(w,'AXTitle')
+ if type(t)~='string' or t=='' then t='untitled' end
+ error('Final Cut dialog "'..t..'" is open; '..todo,0)
+end
+-- Our share window, only while unsubmitted: the destination's title and its Next… button.
+local function ownedShare(root,opts)
+ local w=dialog(root)
+ local name=(opts.shareDestination or 'AI Reference…'):gsub('…$','')
+ if w and a(w,'AXTitle')==name and title(w,'Next…') then return w end
+end
+-- nil when no owned share is open; else whether Final Cut then shows no dialog
+-- (false on any error). Two presses at most: the first may only close a save
+-- sheet over the share.
+local function cancelOwnedShare(root,opts)
+ local ok,closed=pcall(function()
+  if not ownedShare(root,opts) then return nil end
+  for _=1,2 do
+   local w=ownedShare(root,opts)
+   if not w then break end
+   press(id(w,'CancelButton') or title(w,'Cancel'))
+   pcall(wait,function() return not ownedShare(root,opts) end,3,'share dialog to close')
+  end
+  return not dialog(root)
+ end)
+ if ok then return closed end
+ return false
+end
 local function assertProject(root,expected)
  local actual=projectName(root)
  if actual~=expected then error('Expected timeline '..tostring(expected)..', found '..tostring(actual),0) end
@@ -74,17 +108,19 @@ end
 
 function M.snapshot(opts)
  local app,root=context()
- if dialog(root) then error('Close the existing Final Cut dialog first',0) end
+ refuseDialog(root,'close it, then capture again')
  app:activate(true)
  wait(function() return a(root,'AXFrontmost')==true end,5,'Final Cut focus')
  menu(app,{'Window','Go To','Timeline'})
  wait(function() return a(a(root,'AXFocusedUIElement'),'AXRole')=='AXLayoutArea' end,5,'timeline focus')
  local source=assert(projectName(root),'No timeline open')
+ mark('reveal-project')
  menu(app,{'File','Reveal Project in Browser'})
  local viewToggle=desc(main(root),'Show clips in list view')
  local changedView=viewToggle~=nil
  if changedView then press(viewToggle) end
  wait(function() local ok,n=pcall(selectedName,root); return ok and n==source end,8,'source project selection')
+ mark('snapshot-project')
  menu(app,{'Edit','Snapshot Project'})
  local snapshot=wait(function()
   local ok,n=pcall(selectedName,root)
@@ -93,6 +129,7 @@ function M.snapshot(opts)
  opts._snapshot=snapshot;opts._source=source;opts._restoreFilmstrip=changedView
  -- Open the browser project explicitly. `Open Clip` can otherwise act on
  -- a selected timeline compound even while a browser project is selected.
+ mark('open-snapshot')
  local selected,field=selectedName(root)
  if selected~=snapshot then error('Snapshot selection changed',0) end
  local frame=assert(a(field,'AXFrame'),'Snapshot row has no visible frame')
@@ -104,9 +141,10 @@ function M.snapshot(opts)
 end
 
 function M.beginShare(opts)
+ mark('open-share')
  local app,root=context()
  assertProject(root,opts.snapshot_project)
- if dialog(root) then error('Close the existing Final Cut dialog first',0) end
+ refuseDialog(root,'close it, then capture again')
  app:activate(true)
  wait(function() return a(root,'AXFrontmost')==true end,5,'Final Cut focus')
  menu(app,{'Window','Go To','Timeline'})
@@ -114,13 +152,16 @@ function M.beginShare(opts)
  -- Export the whole project; a selected range would silently truncate it.
  menu(app,{'Mark','Clear Selected Ranges'})
  menu(app,{'File','Share',opts.shareDestination or 'AI Reference…'})
- wait(function() return dialog(root) end,10)
- return M.inspect(opts)
+ -- From here a failure may cancel the share window, if ownedShare matches it.
+ opts._ownsDialog=true
+ mark('find-dialog')
+ local w=wait(function() return dialog(root) end,10,'share dialog')
+ return {dialog=a(w,'AXTitle')}
 end
 
 function M.exportSourceXML(opts)
  local _,root=context()
- if dialog(root) then error('Close the existing Final Cut dialog first',0) end
+ refuseDialog(root,'close it, then capture again')
  local source=assert(projectName(root),'No project open')
  local result=fcpPalette.exportXML(opts.destination,{resultFile=opts.resultFile..'.xml',timeout=40})
  if not result.ok then error(result.error,0) end
@@ -151,8 +192,8 @@ function M.share(opts)
  M.beginShare(opts)
  local w=dialog(root)
  if a(w,'AXTitle')~='AI Reference' then error('Unexpected export dialog; refusing to continue',0) end
- opts._ownsDialog=true
- press(title(w,'Settings'))
+ mark('read-settings')
+ press(wait(function() return title(w,'Settings') end,5,'share Settings tab'))
  wait(function() return title(w,'H.264 Single-pass (Faster)') end)
  local settings={format=a(popupAfterLabel(w,'Format:'),'AXValue'),
   codec=a(popupAfterLabel(w,'Video Codec:'),'AXValue'),
@@ -167,6 +208,7 @@ function M.share(opts)
  -- popup offers it, for this share only; the exact-size check below still
  -- refuses anything else, so the reference never scales.
  if settings.resolution~=want then
+  mark('set-resolution')
   local pop=popupAfterLabel(w,'Resolution:')
   press(pop)
   local ok=pcall(function()
@@ -183,6 +225,7 @@ function M.share(opts)
   settings.resolution=want
  end
  -- The summary's dimensions field refreshes a beat after a resolution change.
+ mark('check-output')
  local dims=function() return a(desc(w,'video dimensions'),'AXValue') end
  pcall(wait,function() return dims()==want end,3,'video dimensions')
  if settings.resolution~=want or dims()~=want then
@@ -203,24 +246,29 @@ function M.share(opts)
  settings.duration=a(desc(w,'duration'),'AXValue')
  settings.fps=a(desc(w,'video frame rate'),'AXValue')
  settings.dimensions=want
+ mark('press-next')
  press(title(w,'Next…'))
  local function savePanel()
   for _,win in ipairs(a(root,'AXWindows') or {}) do
    if id(win,'saveAsNameTextField') then return win end
   end
  end
+ mark('save-panel')
  local panel=wait(savePanel)
  -- Same exact-folder proof as Export XML (full-path suggestion, then the
  -- bidi-stripped Where popup), shared from the palette.
  local dir=opts.destination:match('^(.*)/[^/]+$')
  fcpPalette.goToSaveFolder(savePanel,dir,function(cap)
   local rem=(operationDeadline or math.huge)-hs.timer.secondsSinceEpoch()
-  if rem<=0 then error('Capture UI deadline exceeded',0) end
+  if rem<=0 then overdue() end
   return math.min(rem,cap or rem)
  end)
  panel=savePanel() or panel
  local name=id(panel,'saveAsNameTextField');name:setAttributeValue('AXValue',opts.destination:match('([^/]+)$'))
  wait(function() return a(name,'AXValue')==opts.destination:match('([^/]+)$') end)
+ -- Past Save the share may be queued: never cancel it from here on.
+ mark('submit')
+ opts._ownsDialog=false
  press(id(panel,'OKButton'))
  wait(function() return not dialog(root) end,10)
  settings.queued_at=hs.timer.secondsSinceEpoch()
@@ -247,7 +295,14 @@ end
 function M.restore(opts)
  local app,root=context()
  assertProject(root,opts.snapshot_project)
- if dialog(root) then error('A Final Cut dialog is still open',0) end
+ local out={restored_project=opts.source_project}
+ -- The caller allows this only after a failed share: close that share window.
+ if opts.cancel_owned_share then
+  mark('cancel-share')
+  out.dialog_cancelled=cancelOwnedShare(root,opts)
+ end
+ mark('restore')
+ refuseDialog(root,'close it, then return to the source project by hand')
  app:activate(true)
  wait(function() return a(root,'AXFrontmost')==true end,5,'Final Cut focus')
  menu(app,{'Window','Go To','Timeline'})
@@ -256,7 +311,7 @@ function M.restore(opts)
  press(back)
  wait(function() return projectName(root)==opts.source_project end)
  if opts.restore_filmstrip then press(desc(main(root),'Show clips in filmstrip view')) end
- return {restored_project=opts.source_project}
+ return out
 end
 
 -- Diagnostic dump is deliberately bounded and excludes huge timeline/browser
@@ -283,18 +338,20 @@ function M.run(action,opts)
  local function write(v) local f=assert(io.open(file..'.tmp','w'));f:write(hs.json.encode(v));f:close();os.rename(file..'.tmp',file) end
  local start=hs.timer.secondsSinceEpoch()
  operationDeadline=start+(opts.timeout or 50)
+ step=nil
  write({state='running',action=action,started=start})
  local ok,result=pcall(function() return assert(M[action],'Unknown capture action')(opts) end)
  operationDeadline=nil
+ local cancelled
  if not ok and opts._ownsDialog then
-  local _,root=context();local w=dialog(root)
-  if w and (a(w,'AXTitle')=='AI Reference' or id(w,'saveAsNameTextField')) then
-   local cancel=id(w,'CancelButton') or title(w,'Cancel')
-   if cancel then press(cancel) end
-  end
+  local cok,_,root=pcall(context)
+  cancelled=cok and cancelOwnedShare(root,opts)
  end
  local out=ok and result or {error=tostring(result)}
- if not ok then out.snapshot_project=opts._snapshot;out.source_project=opts._source;out.restore_filmstrip=opts._restoreFilmstrip end
+ if not ok then
+  out.snapshot_project=opts._snapshot;out.source_project=opts._source;out.restore_filmstrip=opts._restoreFilmstrip
+  out.step=step;out.dialog_cancelled=cancelled
+ end
  out.ok=ok;out.operation=action;out.ms=math.floor((hs.timer.secondsSinceEpoch()-start)*1000)
  write(out)
  return out
