@@ -159,6 +159,16 @@ function M.beginShare(opts)
  return {dialog=a(w,'AXTitle')}
 end
 
+-- Read-only: the project open in the timeline and any open dialog's title.
+-- Never activates Final Cut, presses anything or uses a menu.
+function M.openProject(opts)
+ local _,root=context()
+ local w=dialog(root)
+ local t=w and a(w,'AXTitle')
+ if type(t)~='string' or t=='' then t=nil end
+ return {project=projectName(root),dialog=t}
+end
+
 function M.exportSourceXML(opts)
  local _,root=context()
  refuseDialog(root,'close it, then capture again')
