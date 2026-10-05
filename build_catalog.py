@@ -90,7 +90,7 @@ TEMPLATE_EXTS = (".moti", ".motn", ".moef", ".motr")
 OBSOLETE_FLAG = 2
 
 def template_file(item_dir):
-    for fn in os.listdir(item_dir):
+    for fn in sorted(os.listdir(item_dir)):
         if fn.endswith(TEMPLATE_EXTS):
             return os.path.join(item_dir, fn)
 
