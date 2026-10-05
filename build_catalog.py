@@ -89,8 +89,17 @@ def keep_name(name):
 TEMPLATE_EXTS = (".moti", ".motn", ".moef", ".motr")
 OBSOLETE_FLAG = 2
 
+def safe_listdir(path):
+    """Sorted entries, or [] when the folder is unreadable or gone, so one bad
+    folder cannot stop the whole build."""
+    try:
+        return sorted(os.listdir(path))
+    except OSError as e:
+        print(f"skipped unreadable folder {path}: {e}", file=sys.stderr)
+        return []
+
 def template_file(item_dir):
-    for fn in sorted(os.listdir(item_dir)):
+    for fn in safe_listdir(item_dir):
         if fn.endswith(TEMPLATE_EXTS) and not fn.startswith("."):
             return os.path.join(item_dir, fn)
 
@@ -181,14 +190,14 @@ def scan_templates(root, items, seen, skip_categories=()):
             base = os.path.join(root, suffix)
             if not os.path.isdir(base):
                 continue
-            for set_entry in sorted(os.listdir(base)):
+            for set_entry in safe_listdir(base):
                 set_dir = os.path.join(base, set_entry)
                 if not os.path.isdir(set_dir):
                     continue
                 if strip_localized(set_entry) in skip_categories:
                     continue
                 set_name = display_name(base, set_entry)
-                for item_entry in sorted(os.listdir(set_dir)):
+                for item_entry in safe_listdir(set_dir):
                     item_dir = os.path.join(set_dir, item_entry)
                     if not os.path.isdir(item_dir):
                         continue
@@ -199,7 +208,7 @@ def scan_templates(root, items, seen, skip_categories=()):
                         continue
                     if not add_template_item(items, seen, category, name,
                                              set_name, item_dir):
-                        for sub in sorted(os.listdir(item_dir)):
+                        for sub in safe_listdir(item_dir):
                             sub_dir = os.path.join(item_dir, sub)
                             sub_name = display_name(item_dir, sub)
                             if keep_name(sub_name) and os.path.isdir(sub_dir):
@@ -242,7 +251,7 @@ def scan_effect_bundles(items, seen):
         table = json.loads(out.stdout)
     except Exception as e:
         print(f"effect bundle strings skipped: {e}", file=sys.stderr)
-    for entry in sorted(os.listdir(EFFECT_BUNDLES)):
+    for entry in safe_listdir(EFFECT_BUNDLES):
         m = re.match(r"^([^.]+)\.([^.]+)\.audio\.effectBundle$", entry)
         if not m:
             continue
@@ -274,7 +283,7 @@ def main():
     scan_effect_bundles(items, seen)
 
     if os.path.isdir(EDEL):
-        for entry in sorted(os.listdir(EDEL)):
+        for entry in safe_listdir(EDEL):
             if os.path.isdir(os.path.join(EDEL, entry)):
                 key = ("Audio Effect", entry.lower())
                 if key not in seen:
@@ -294,7 +303,7 @@ def main():
         print(f"auval scan skipped: {e}", file=sys.stderr)
 
     if os.path.isdir(PRESETS):
-        for entry in sorted(os.listdir(PRESETS)):
+        for entry in safe_listdir(PRESETS):
             if entry.endswith(".effectsPreset"):
                 name = entry[:-len(".effectsPreset")]
                 key = ("Effect Preset", name.lower())
