@@ -91,7 +91,7 @@ OBSOLETE_FLAG = 2
 
 def template_file(item_dir):
     for fn in sorted(os.listdir(item_dir)):
-        if fn.endswith(TEMPLATE_EXTS):
+        if fn.endswith(TEMPLATE_EXTS) and not fn.startswith("."):
             return os.path.join(item_dir, fn)
 
 def template_meta(path):
