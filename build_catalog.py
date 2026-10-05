@@ -231,7 +231,7 @@ def scan_internal_filters(items, seen):
     except Exception as e:
         print(f"internal filters scan skipped: {e}", file=sys.stderr)
         return
-    for k, v in table.items():
+    for k, v in sorted(table.items()):
         if k.endswith("::Filter Name") and keep_name(v):
             key = ("Video Effect", v.lower())
             if key not in seen:
