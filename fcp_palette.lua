@@ -272,9 +272,10 @@ local function typeIntoField(field, text)
     waitFor(function() return attr(field, "AXFocused") end, 0.5)
     clearField(field)
     field:setAttributeValue("AXFocused", true)
+    local fa = hs.application.frontmostApplication()
     dbg(string.format("type attempt %d: focused=%s val=[%s] front=%s", attempt,
       tostring(attr(field, "AXFocused")), tostring(attr(field, "AXValue")),
-      tostring(hs.application.frontmostApplication():name())))
+      tostring(fa and fa:name())))
     hs.eventtap.keyStrokes(text)
     -- The grid settle (waitForCell) is what gates the click, so no fixed
     -- filter sleep here.
