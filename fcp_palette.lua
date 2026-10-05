@@ -525,7 +525,7 @@ local function applyConnected(app, choice)
   parkPointer(app)   -- skimmer beats the playhead: the pointer must be off the timeline
   app:selectMenuItem({ "Edit", "Connect to Primary Storyline" })
   dbg("STAGE menu returned")
-  local changed
+  local changed, unverified
   if not repeatApply then
     changed = waitFor(function() return undoTitle(app) == CONNECT_UNDO end, 3)
   else
@@ -536,12 +536,16 @@ local function applyConnected(app, choice)
     changed = la2 and waitFor(function()
       return countClips(la2, clipDesc) > clipsBefore
     end, 3)
+    unverified = not la2
   end
   dbg("STAGE verify done changed=" .. tostring(changed))
   -- Notify before cleanup: the cleanup (clear field, refocus timeline) is
   -- ~0.5s the user shouldn't have to wait through to learn the outcome.
   if changed then
     notify("Connected " .. landedName(choice, exact) .. " at the playhead.")
+  elseif unverified then
+    -- No timeline to count: it may have landed, and a re-apply would duplicate it.
+    notify("Couldn't verify — check the timeline before applying again.")
   else
     notify("Connect didn’t register for “" .. choice.name .. "” — nothing applied.")
   end
