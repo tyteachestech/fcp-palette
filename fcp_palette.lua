@@ -393,7 +393,10 @@ end
 -- check runs on the actual point about to be clicked.
 local function clickCell(app, cell, double)
   local f = attr(cell, "AXFrame")
-  if not f then return false end
+  if not f then
+    notify("Lost the browser cell — nothing applied.")
+    return false
+  end
   local pt = { x = f.x + f.w / 2, y = f.y + f.h / 2 }
   local owner = ax.systemElementAtPosition(pt)
   local opid = owner and owner:pid()
