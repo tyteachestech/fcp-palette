@@ -1816,6 +1816,14 @@ local function isPluginFile(path)
 end
 
 function M.start()
+  -- A second start (config reload) must not leave the old hotkey, watchers,
+  -- taps or chooser live beside the new ones.
+  if M.hotkeyObj then M.hotkeyObj:delete() end
+  if M.appWatcher then M.appWatcher:stop() end
+  for _, pw in ipairs(M.pathWatchers or {}) do pw:stop() end
+  if clickTap then clickTap:stop() end
+  if keysTap then keysTap:stop() end
+  if chooser then chooser:delete() end
   chooser = hs.chooser.new(function(choice)
     if choice then applyChoice(choice) end
   end)
