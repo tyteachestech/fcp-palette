@@ -474,6 +474,13 @@ local function applyConnected(app, choice)
   dbg("STAGE sidebarBrowser")
   local browser = sidebarBrowser(app)
   if not browser then return false end
+  -- Without the grid, waitForCell finds nothing and the item would be
+  -- tombstoned as missing although FCP was never searched.
+  if not browser.grid then
+    notify("Couldn't find the browser grid.")
+    goTo(app, "Timeline")
+    return false
+  end
   local root = CATEGORIES[choice.category].root
   dbg("STAGE selectRoot")
   if not selectSidebarRoot(browser, root) then
@@ -669,6 +676,11 @@ local function applyEffect(app, choice)
   end
   local tbl, grid = effectsPaneParts(field)
   dbg("pane parts tbl=" .. tostring(tbl ~= nil) .. " grid=" .. tostring(grid ~= nil))
+  if not grid then
+    notify("Couldn't find the browser grid.")
+    goTo(app, "Timeline")
+    return false
+  end
   ensureAllScope(tbl)
   parkPointer(app)
   local typed = typeIntoField(field, choice.name)
