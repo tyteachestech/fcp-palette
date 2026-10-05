@@ -204,7 +204,7 @@ function M.share(opts)
  if a(w,'AXTitle')~='AI Reference' then error('Unexpected export dialog; refusing to continue',0) end
  mark('read-settings')
  press(wait(function() return title(w,'Settings') end,5,'share Settings tab'))
- wait(function() return title(w,'H.264 Single-pass (Faster)') end)
+ wait(function() return title(w,'H.264 Single-pass (Faster)') end,5,'share video codec')
  local settings={format=a(popupAfterLabel(w,'Format:'),'AXValue'),
   codec=a(popupAfterLabel(w,'Video Codec:'),'AXValue'),
   resolution=a(popupAfterLabel(w,'Resolution:'),'AXValue'),
@@ -264,7 +264,7 @@ function M.share(opts)
   end
  end
  mark('save-panel')
- local panel=wait(savePanel)
+ local panel=wait(savePanel,5,'share save panel')
  -- Same exact-folder proof as Export XML (full-path suggestion, then the
  -- bidi-stripped Where popup), shared from the palette.
  local dir=opts.destination:match('^(.*)/[^/]+$')
@@ -275,12 +275,12 @@ function M.share(opts)
  end)
  panel=savePanel() or panel
  local name=id(panel,'saveAsNameTextField');name:setAttributeValue('AXValue',opts.destination:match('([^/]+)$'))
- wait(function() return a(name,'AXValue')==opts.destination:match('([^/]+)$') end)
+ wait(function() return a(name,'AXValue')==opts.destination:match('([^/]+)$') end,5,'share file name')
  -- Past Save the share may be queued: never cancel it from here on.
  mark('submit')
  opts._ownsDialog=false
  press(id(panel,'OKButton'))
- wait(function() return not dialog(root) end,10)
+ wait(function() return not dialog(root) end,10,'share dialog to close after Save')
  settings.queued_at=hs.timer.secondsSinceEpoch()
  return settings
 end
@@ -290,7 +290,7 @@ function M.background(opts)
  menu(app,{'Window','Background Tasks'})
  local w=wait(function()
   for _,win in ipairs(a(root,'AXWindows') or {}) do if a(win,'AXTitle')=='Background Tasks' then return win end end
- end)
+ end,5,'Background Tasks window')
  local lines={}
  local function walk(e,d)
   if d>8 then return end
@@ -319,7 +319,7 @@ function M.restore(opts)
  local back=id(main(root),'editor/timelineContainer/toolbar/timelineNavigationBackButton')
  if a(back,'AXEnabled')~=true then error('Timeline history cannot return to the source project',0) end
  press(back)
- wait(function() return projectName(root)==opts.source_project end)
+ wait(function() return projectName(root)==opts.source_project end,5,'source project timeline')
  if opts.restore_filmstrip then press(desc(main(root),'Show clips in filmstrip view')) end
  return out
 end
