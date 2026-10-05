@@ -488,10 +488,12 @@ local function applyConnected(app, choice)
   dbg("STAGE selectRoot")
   if not selectSidebarRoot(browser, root) then
     notify("Couldn't select the " .. root .. " sidebar root.")
+    goTo(app, "Timeline")
     return false
   end
   dbg("STAGE type")
   if not typeIntoField(browser.field, choice.name) then
+    clearField(browser.field)
     goTo(app, "Timeline")
     return false
   end
@@ -693,6 +695,7 @@ local function applyEffect(app, choice)
   local typed = typeIntoField(field, choice.name)
   dbg("typed=" .. tostring(typed))
   if not typed then
+    clearField(field)
     goTo(app, "Timeline")
     return false
   end
