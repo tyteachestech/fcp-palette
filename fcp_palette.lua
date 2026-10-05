@@ -1172,14 +1172,15 @@ local function refreshRowCanvas()
   local viewportBottom = math.min(fr.y + fr.h, viewport.y + viewport.h)
 
   local visible = {}
-  local sig = { string.format("viewport:%d:%d", viewportTop, viewportBottom) }
+  -- AX frames can be fractional; %d rejects a non-integral float in Lua 5.4.
+  local sig = { string.format("viewport:%d:%d", math.floor(viewportTop), math.floor(viewportBottom)) }
   for i, row in ipairs(rows) do
     local rf = attr(row, "AXFrame")
     local c = currentChoices[i]
     if rf and c and rf.y + rf.h > viewportTop and rf.y < viewportBottom then
       local selected = attr(row, "AXSelected") == true
       visible[#visible + 1] = { frame = rf, choice = c, selected = selected }
-      sig[#sig + 1] = string.format("%d:%d:%d:%s:%s", i, rf.y, rf.h,
+      sig[#sig + 1] = string.format("%d:%d:%d:%s:%s", i, math.floor(rf.y), math.floor(rf.h),
         c.id or c.displayName or "", tostring(selected))
     end
   end
